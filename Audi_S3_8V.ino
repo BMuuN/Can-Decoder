@@ -1224,7 +1224,13 @@ void CockpitCoreProcessor(void *pvParameters) {
         doc["diag_src"] = m_snap.last_diag_source;
         doc["diag_cnt"] = m_snap.diag_response_counter;
 
-        serializeJson(doc, global_ws_buffer, sizeof(global_ws_buffer));
+        const size_t payload_bytes = measureJson(doc) + 1; // include null terminator
+        if (payload_bytes > sizeof(global_ws_buffer)) {
+          snprintf(global_ws_buffer, sizeof(global_ws_buffer),
+            "{\"ok\":false,\"msg\":\"Telemetry payload exceeded websocket buffer\"}");
+        } else {
+          serializeJson(doc, global_ws_buffer, sizeof(global_ws_buffer));
+        }
 
         // C-2: Release store ensures all preceding writes to global_ws_buffer
         //      are visible to Core 0 before it observes ws_payload_ready = true.

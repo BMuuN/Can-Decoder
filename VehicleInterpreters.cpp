@@ -40,10 +40,15 @@ bool applyOdometerSignalMapping(twai_message_t &msg, const OdometerSignalMapping
     if (mapping.byte_count == 0 || mapping.byte_count > 4) return false;
     if (msg.data_length_code < (mapping.start_byte + mapping.byte_count)) return false;
 
+    const auto mapped_byte_index = [&](uint8_t offset) -> uint8_t {
+        return mapping.big_endian
+            ? (mapping.start_byte + offset)
+            : (mapping.start_byte + mapping.byte_count - 1 - offset);
+    };
+
     uint32_t raw = 0;
     for (uint8_t i = 0; i < mapping.byte_count; i++) {
-        const uint8_t idx = mapping.big_endian ? (mapping.start_byte + i) : (mapping.start_byte + mapping.byte_count - 1 - i);
-        raw = (raw << 8) | msg.data[idx];
+        raw = (raw << 8) | msg.data[mapped_byte_index(i)];
     }
 
     sys_ctx->metrics.odometer_km = raw * mapping.scale;

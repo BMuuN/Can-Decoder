@@ -19,7 +19,7 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
     const float vehicle_speed = target_rpm * 0.018f;
     const float throttle_pct = (target_rpm / 5500.0f) * 70.0f;
     const float exterior_temp = 18.0f;
-    const float odometer_km = 182345.6f + (bench_tick * 0.02f);
+    const float odometer_km = 182345.6f + ((bench_tick % 500000UL) * 0.02f);
     const uint8_t infotainment_track = 7 + (bench_tick / 120) % 6;
 
     // C-4: Protect the metrics write with the spinlock so Core 1's
