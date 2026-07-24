@@ -4,6 +4,20 @@
 #include <Arduino.h>
 #include "driver/twai.h"
 #include <lvgl.h>
+#include "freertos/portmacro.h"
+#include <atomic>
+
+// --- CAN FILTER HELPER ---
+// SJA1000/ESP32 TWAI: standard 11-bit IDs are stored in bits [31:21] of the
+// 32-bit acceptance_code/acceptance_mask register.
+static constexpr int CAN_FILTER_ID_SHIFT = 21;
+
+// Decode raw VW/Audi temperature byte (value = Celsius + 40 offset, uint8_t).
+// Promotes to int before subtracting to avoid uint8_t underflow at cold start
+// (raw < 40 would wrap to 216+ as unsigned).
+static inline float decode_temperature_offset(uint8_t raw) {
+    return (float)((int)raw - 40);
+}
 
 // --- ADVANCED VEHICLE DECODING ENUMS ---
 enum MqbPlatformSeries {
@@ -24,6 +38,14 @@ struct LiveTelemetryMetrics {
     bool driver_door_open = false;
     float target_temp = 0.0;
     uint8_t mmi_key_code = 0x00;
+    // --- Extended telemetry fields ---
+    float vehicle_speed = 0.0;        // km/h, platform-specific speed frame
+    float throttle_pct = 0.0;         // 0–100 %, accelerator pedal position
+    float exterior_temp = 0.0;        // °C, outside ambient temperature
+    bool passenger_door_open = false;
+    bool rear_left_door_open = false;
+    bool rear_right_door_open = false;
+    bool handbrake_active = false;
 };
 
 struct DecodedVehicleMetrics {
@@ -70,6 +92,18 @@ extern twai_handle_t twai_ports[];
 extern lv_obj_t *rpm_meter;
 extern lv_obj_t *boost_meter;
 extern lv_color_t color_normal_green;
+
+// --- MULTICORE SYNCHRONISATION PRIMITIVES ---
+// g_metrics_mux: spinlock protecting sys_ctx->metrics fields against Core-0/Core-1 races.
+// g_interpreter_mutex: FreeRTOS mutex protecting sys_ctx->interpreter and active_vehicle_profile.
+extern portMUX_TYPE      g_metrics_mux;
+extern SemaphoreHandle_t g_interpreter_mutex;
+
+// g_twai0_valid: atomic flag that is cleared to false before the bus-off recovery on Core 1
+// uninstalls the TWAI port-0 driver, and restored to true once the reinstall completes.
+// Core 0's runBenchTelemetrySimulation checks this flag before every twai_transmit_v2 call
+// on port 0, preventing a use-after-free crash when the handle is momentarily invalid.
+extern std::atomic<bool> g_twai0_valid;
 
 // =========================================================================
 //  BENCH COMPACT GENERIC FALLBACK INTERPRETER BLUEPRINT

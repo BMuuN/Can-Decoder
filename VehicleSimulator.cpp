@@ -7,15 +7,25 @@
 void runBenchTelemetrySimulation(float target_rpm, float target_boost, float target_oil, float target_h2o) {
     if (sys_ctx == nullptr) return;
 
-    // 1. Direct variable injection (Guarantees the smartphone browser stays buttery smooth)
+    // C-4: Protect the metrics write with the spinlock so Core 1's
+    //      updateUIElements/parsers never observe a partially-written struct.
+    portENTER_CRITICAL(&g_metrics_mux);
     sys_ctx->metrics.engine_rpm   = target_rpm;
     sys_ctx->metrics.boost_bar    = target_boost;
     sys_ctx->metrics.oil_temp     = target_oil;
     sys_ctx->metrics.coolant_temp = target_h2o;
+    // Derived bench values for new extended metrics
+    sys_ctx->metrics.vehicle_speed  = target_rpm * 0.018f; // ~100 km/h at 5500 rpm
+    sys_ctx->metrics.throttle_pct   = (target_rpm / 5500.0f) * 70.0f;
+    sys_ctx->metrics.exterior_temp  = 18.0f;               // static bench ambient
+    portEXIT_CRITICAL(&g_metrics_mux);
 
     // 2. Safely process hardware frame simulation ONLY if a real vehicle network is locked!
     // This stops the hardware registers from filling up and freezing the chip on your open desk.
-    if (active_vehicle_profile.network_generation != SERIES_UNKNOWN) {
+    // C-5: Also guard on g_twai0_valid: the bus-off recovery on Core 1 temporarily uninstalls
+    //      and reinstalls the port-0 driver.  Transmitting with a stale handle causes a crash.
+    if (active_vehicle_profile.network_generation != SERIES_UNKNOWN &&
+        g_twai0_valid.load(std::memory_order_acquire)) {
         twai_message_t tx_msg;
         tx_msg.extd = 0;
         tx_msg.rtr = 0;
@@ -45,6 +55,26 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
             *(tx_msg.data + 1) = (uint8_t)((raw_mbar >> 8) & 0xFF); 
             for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
             twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // D. Pack Vehicle Speed to MQB standard (ID: 0x096, 0.01 km/h/LSB)
+            tx_msg.identifier = 0x096;
+            uint16_t raw_spd_mqb = (uint16_t)(sys_ctx->metrics.vehicle_speed / 0.01f);
+            *(tx_msg.data + 0) = (uint8_t)(raw_spd_mqb & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)((raw_spd_mqb >> 8) & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // E. Pack Throttle to MQB standard (ID: 0x084, 0.4 %/LSB)
+            tx_msg.identifier = 0x084;
+            *(tx_msg.data + 0) = (uint8_t)(sys_ctx->metrics.throttle_pct / 0.4f);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // F. Pack Exterior Temp to MQB standard (ID: 0x317, raw = °C + 40)
+            tx_msg.identifier = 0x317;
+            *(tx_msg.data + 0) = (uint8_t)(sys_ctx->metrics.exterior_temp + 40.0f);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
         } 
         else {
             // A. Pack Engine Speed to PQ Bus standard (ID: 0x280)
@@ -63,9 +93,31 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
             twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
 
             // C. Pack Boost Pressure to PQ Bus standard (ID: 0x380)
+            // M-2: Clamp to uint8_t range to prevent overflow above ~1.4 Bar.
             tx_msg.identifier = 0x380;
             int absolute_mbar = (int)((target_boost * 1000.0) + 1013.0);
-            *(tx_msg.data + 0) = (uint8_t)(absolute_mbar / 10);
+            int raw_mbar_clamped = absolute_mbar / 10;
+            *(tx_msg.data + 0) = (uint8_t)(raw_mbar_clamped > 255 ? 255 : raw_mbar_clamped);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // D. Pack Vehicle Speed to PQ standard (ID: 0x0C0, 0.01 km/h/LSB)
+            tx_msg.identifier = 0x0C0;
+            uint16_t raw_spd_pq = (uint16_t)(sys_ctx->metrics.vehicle_speed / 0.01f);
+            *(tx_msg.data + 0) = (uint8_t)(raw_spd_pq & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)((raw_spd_pq >> 8) & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // E. Pack Throttle to PQ standard (ID: 0x088, 0.4 %/LSB)
+            tx_msg.identifier = 0x088;
+            *(tx_msg.data + 0) = (uint8_t)(sys_ctx->metrics.throttle_pct / 0.4f);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // F. Pack Exterior Temp to PQ standard (ID: 0x65D, raw = °C + 40)
+            tx_msg.identifier = 0x65D;
+            *(tx_msg.data + 0) = (uint8_t)(sys_ctx->metrics.exterior_temp + 40.0f);
             for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
             twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
         }
