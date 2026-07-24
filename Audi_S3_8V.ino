@@ -43,7 +43,7 @@
 #define CH2_RX 9
 
 // Integrated Audio Amplifier Header mapping for the Waveshare P4
-#define AUDIO_PWM_PIN 45  
+#define AUDIO_PWM_PIN 45
 
 // --- SAFETY CRITICAL THRESHOLDS ---
 #define MAX_SAFE_OIL_TEMP 115     // Alarm activates over 115°C
@@ -63,7 +63,7 @@ static constexpr uint32_t SERIAL_BAUD_RATE = 921600; // USB CDC virtual port; 92
 // SECURITY: Change AP_PASSWORD_DEFAULT above before deploying to a real vehicle.
 
 // --- THREAD-SAFE FIXED CHAR BUFFER ARRAY ---
-static char global_ws_buffer[512]; // Extended to accommodate new telemetry fields
+static char global_ws_buffer[2048]; // Expanded from 512 to 2048 bytes to accommodate grouped telemetry expansions
 // std::atomic<bool> with acquire/release semantics provides the memory-ordering
 // fence needed on RISC-V (ESP32-P4) so the buffer writes are visible to Core 0
 // before it observes the flag as true.  Plain 'volatile' does NOT provide this.
@@ -86,7 +86,7 @@ SemaphoreHandle_t g_interpreter_mutex = NULL;
 
 // --- DYNAMIC GRAPHICAL UI OBJECT POINTERS ---
 // (Removed 'static' so our class files can access them without conflicts)
-lv_obj_t *tv; 
+lv_obj_t *tv;
 lv_obj_t *rpm_meter;
 lv_obj_t *boost_meter;
 lv_obj_t *oil_arc;
@@ -507,6 +507,18 @@ void runComfortTest() {
     sys_ctx->metrics.rear_left_door_open = !sys_ctx->metrics.rear_left_door_open;
     sys_ctx->metrics.rear_right_door_open= !sys_ctx->metrics.rear_right_door_open;
     sys_ctx->metrics.handbrake_active    = !sys_ctx->metrics.handbrake_active;
+    sys_ctx->metrics.left_indicator_active = !sys_ctx->metrics.left_indicator_active;
+    sys_ctx->metrics.left_indicator_known = true;
+    sys_ctx->metrics.right_indicator_active = !sys_ctx->metrics.right_indicator_active;
+    sys_ctx->metrics.right_indicator_known = true;
+    sys_ctx->metrics.parking_lights_active = !sys_ctx->metrics.parking_lights_active;
+    sys_ctx->metrics.parking_lights_known = true;
+    sys_ctx->metrics.low_beam_active = !sys_ctx->metrics.low_beam_active;
+    sys_ctx->metrics.low_beam_known = true;
+    sys_ctx->metrics.high_beam_active = !sys_ctx->metrics.high_beam_active;
+    sys_ctx->metrics.high_beam_known = true;
+    sys_ctx->metrics.interior_lights_active = !sys_ctx->metrics.interior_lights_active;
+    sys_ctx->metrics.interior_lights_known = true;
     // Cycle target temp between two bench values on each call.
     sys_ctx->metrics.target_temp = (sys_ctx->metrics.target_temp == 0.0f) ? 22.0f : 0.0f;
     portEXIT_CRITICAL(&g_metrics_mux);
@@ -519,6 +531,42 @@ void runComfortTest() {
     Serial.printf("  handbrake=%s  target_temp=%.1f C\n",
         sys_ctx->metrics.handbrake_active ? "ON" : "OFF",
         sys_ctx->metrics.target_temp);
+    Serial.printf("  indicators=%s/%s  lights parking=%s low=%s high=%s interior=%s\n",
+        sys_ctx->metrics.left_indicator_active ? "LEFT" : "OFF",
+        sys_ctx->metrics.right_indicator_active ? "RIGHT" : "OFF",
+        sys_ctx->metrics.parking_lights_active ? "ON" : "OFF",
+        sys_ctx->metrics.low_beam_active ? "ON" : "OFF",
+        sys_ctx->metrics.high_beam_active ? "ON" : "OFF",
+        sys_ctx->metrics.interior_lights_active ? "ON" : "OFF");
+}
+
+static void queuePassiveDiagnosticPoll() {
+    static uint32_t last_diag_poll = 0;
+    static bool poll_monitor_status = true;
+
+    if (active_vehicle_profile.network_generation == SERIES_UNKNOWN) return;
+    if (g_fulltest_active) return;
+    if (!g_twai0_valid.load(std::memory_order_acquire)) return;
+    if (millis() - last_diag_poll < 2500) return;
+    last_diag_poll = millis();
+
+    twai_message_t tx_msg;
+    tx_msg.identifier = 0x7E0;
+    tx_msg.extd = 0;
+    tx_msg.rtr = 0;
+    tx_msg.data_length_code = 8;
+    tx_msg.data[0] = 0x02;
+    tx_msg.data[1] = 0x01;
+    if (poll_monitor_status) {
+        tx_msg.data[2] = 0x01; // PID 0x01: monitor status since DTC clear
+    } else {
+        tx_msg.data[2] = 0x42; // PID 0x42: control module voltage
+    }
+    for (int i = 3; i < 8; i++) tx_msg.data[i] = 0x00;
+
+    if (twai_transmit_v2(twai_ports[0], &tx_msg, 0) == ESP_OK) {
+        poll_monitor_status = !poll_monitor_status;
+    }
 }
 
 void beginFullBenchVinTest() {
@@ -671,6 +719,20 @@ const char index_html[] PROGMEM = R"rawhtml(
         <div id="coolant" class="val blue">0</div>
         <div class="unit">&deg;C</div>
     </div>
+    <div class="card">
+        <div class="lbl">Gearbox</div>
+        <div id="gear" class="val white">UNAVAILABLE</div>
+        <div class="unit">selector / current gear</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Drive Mode</div>
+        <div id="mode" class="val white" style="font-size:1.5em">UNAVAILABLE</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Odometer</div>
+        <div id="odo" class="val white" style="font-size:1.4em">UNAVAILABLE</div>
+        <div class="unit">km</div>
+    </div>
 </div>
 </div>
 
@@ -690,6 +752,18 @@ const char index_html[] PROGMEM = R"rawhtml(
     <div class="card">
         <div class="lbl">Handbrake</div>
         <div id="hb" class="val green">OFF</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Indicators</div>
+        <div id="ind" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Exterior Lights</div>
+        <div id="lights" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Interior Lights</div>
+        <div id="cabin" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
     </div>
 </div>
 <div class="door-grid">
@@ -728,6 +802,15 @@ const char index_html[] PROGMEM = R"rawhtml(
         <div class="lbl">Electrical Bus</div>
         <div id="bus" class="val white" style="font-size:1.4em">---</div>
     </div>
+    <div class="card" style="min-width:260px">
+        <div class="lbl">Media Source</div>
+        <div id="src_name" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
+        <div class="unit">Track / Preset: <span id="trk">--</span></div>
+    </div>
+    <div class="card" style="min-width:260px">
+        <div class="lbl">Phone Status</div>
+        <div id="phone" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
+    </div>
 </div>
 </div>
 
@@ -739,6 +822,11 @@ const char index_html[] PROGMEM = R"rawhtml(
     <tr><td>Model</td><td id="dg_car">---</td></tr>
     <tr><td>Bus Platform</td><td id="dg_bus">---</td></tr>
     <tr><td>Production Year</td><td id="dg_year">---</td></tr>
+    <tr><td>MIL</td><td id="dg_mil">UNAVAILABLE</td></tr>
+    <tr><td>Stored DTCs</td><td id="dg_dtc">UNAVAILABLE</td></tr>
+    <tr><td>Module Voltage</td><td id="dg_vbat">UNAVAILABLE</td></tr>
+    <tr><td>Last Response</td><td id="dg_last">UNAVAILABLE</td></tr>
+    <tr><td>Diag Samples</td><td id="dg_count">0</td></tr>
     <tr><td>WebSocket</td><td id="dg_ws">CONNECTING</td></tr>
 </table>
 <div style="margin-top:14px">
@@ -786,6 +874,11 @@ function decodeMmi(code) {
     return map[code] !== undefined ? map[code] : 'UNKNOWN';
 }
 
+function statusLabel(active, known, onLabel, offLabel) {
+    if (!known) return 'UNAVAILABLE';
+    return active ? onLabel : offLabel;
+}
+
 function update(d) {
     if (d.ok !== undefined && d.msg) {
         alert(d.msg);
@@ -820,6 +913,18 @@ function update(d) {
     cEl.textContent = d.h2o||0;
     cEl.className = 'val ' + colorTemp(d.h2o||0, 70, 105);
 
+    var gearEl = document.getElementById('gear');
+    gearEl.textContent = d.gear_ok ? d.gear_label : 'UNAVAILABLE';
+    gearEl.className = 'val ' + (d.gear_ok ? 'white' : 'blue');
+
+    var modeEl = document.getElementById('mode');
+    modeEl.textContent = d.mode_name || 'UNAVAILABLE';
+    modeEl.className = 'val ' + (d.mode_name === 'SPORT' ? 'amber' : d.mode_name === 'NORMAL' ? 'green' : 'blue');
+
+    var odoEl = document.getElementById('odo');
+    odoEl.textContent = d.odo_ok ? (d.odo||0).toFixed(1) : 'UNAVAILABLE';
+    odoEl.className = 'val ' + (d.odo_ok ? 'white' : 'blue');
+
     // Comfort
     document.getElementById('ext').textContent = (d.ext||0).toFixed(1);
     document.getElementById('ext').className   = 'val ' + ((d.ext||0) < 3 ? 'blue' : 'white');
@@ -832,10 +937,53 @@ function update(d) {
     doorCell('dc_rld', 'ds_rld', d.rld);
     doorCell('dc_rrd', 'ds_rrd', d.rrd);
 
+    var indEl = document.getElementById('ind');
+    var indicatorsKnown = d.li_ok || d.ri_ok;
+    if (!indicatorsKnown) indEl.textContent = 'UNAVAILABLE';
+    else if (d.li && d.ri) indEl.textContent = 'HAZARDS';
+    else if (d.li) indEl.textContent = 'LEFT ACTIVE';
+    else if (d.ri) indEl.textContent = 'RIGHT ACTIVE';
+    else indEl.textContent = 'OFF';
+    var indicatorClass = 'blue';
+    if (indicatorsKnown) indicatorClass = (d.li || d.ri) ? 'amber blink' : 'green';
+    indEl.className = 'val ' + indicatorClass;
+
+    var lightsEl = document.getElementById('lights');
+    var lightsKnown = d.park_ok || d.low_ok || d.high_ok;
+    if (!lightsKnown) lightsEl.textContent = 'UNAVAILABLE';
+    else if (d.high) lightsEl.textContent = 'HIGH BEAM';
+    else if (d.low) lightsEl.textContent = 'LOW BEAM';
+    else if (d.park) lightsEl.textContent = 'PARKING';
+    else lightsEl.textContent = 'OFF';
+    var lightsClass = 'blue';
+    if (lightsKnown) {
+        if (d.high) lightsClass = 'amber';
+        else if (d.low) lightsClass = 'green';
+        else lightsClass = 'white';
+    }
+    lightsEl.className = 'val ' + lightsClass;
+
+    var cabinEl = document.getElementById('cabin');
+    cabinEl.textContent = statusLabel(d.int, d.int_ok, 'ON', 'OFF');
+    cabinEl.className = 'val ' + (!d.int_ok ? 'blue' : d.int ? 'amber' : 'green');
+
     // Infotainment
     var mmi = d.mmi||0;
     document.getElementById('mmi_hex').textContent  = '0x'+mmi.toString(16).toUpperCase().padStart(2,'0');
-    document.getElementById('mmi_name').textContent = decodeMmi(mmi);
+    document.getElementById('mmi_name').textContent = d.mmi_name || decodeMmi(mmi);
+    document.getElementById('src_name').textContent = d.src_name || 'UNAVAILABLE';
+    document.getElementById('src_name').className   = 'val ' + (d.src_ok ? 'white' : 'blue');
+    document.getElementById('trk').textContent      = d.trk_ok ? d.trk : '--';
+    var phoneEl = document.getElementById('phone');
+    phoneEl.textContent = statusLabel(d.phone, d.phone_ok, 'CALL ACTIVE', 'IDLE');
+    phoneEl.className = 'val ' + (!d.phone_ok ? 'blue' : d.phone ? 'amber blink' : 'green');
+
+    // Diagnostics
+    document.getElementById('dg_mil').textContent   = statusLabel(d.mil, d.mil_ok, 'ON', 'OFF');
+    document.getElementById('dg_dtc').textContent   = d.mil_ok ? String(d.dtc || 0) : 'UNAVAILABLE';
+    document.getElementById('dg_vbat').textContent  = d.volt_ok ? (d.volt||0).toFixed(2) + ' V' : 'UNAVAILABLE';
+    document.getElementById('dg_last').textContent  = d.diag_seen ? ('0x' + (d.diag_src || 0).toString(16).toUpperCase() + ' / 0x' + (d.diag_svc || 0).toString(16).toUpperCase() + ' / 0x' + (d.diag_pid || 0).toString(16).toUpperCase()) : 'UNAVAILABLE';
+    document.getElementById('dg_count').textContent = d.diag_seen ? String(d.diag_cnt || 0) : '0';
 }
 
 function showTab(id, btn) {
@@ -898,6 +1046,7 @@ bool applyAndPersistApPassword(const char* password, const char* source);
 void processQueuedPasswordChange();
 void showPasswordEditorOverlay();
 void closePasswordEditorOverlay();
+static void formatGearLabel(const LiveTelemetryMetrics& m, char* out, size_t out_size);
 
 // --- DISPLAY BUFFER BLOCK ALLOCATION FOR LVGL ---
 // #define DISP_HOR_RES 800  // Set this to your specific Waveshare screen width
@@ -928,7 +1077,7 @@ static lv_indev_drv_t indev_drv;
 void landscape_touch_read_cb(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
     // 1. Replace this section with your specific GT911 hardware check logic
     // Example pseudocode signature: if (gt911.isTouched()) { ... }
-    bool touch_hardware_active = false; 
+    bool touch_hardware_active = false;
 
     if (touch_hardware_active) {
         // Read raw portrait hardware registers directly from the chip
@@ -938,7 +1087,7 @@ void landscape_touch_read_cb(lv_indev_drv_t * indev_driver, lv_indev_data_t * da
         // 2. MATHEMATICAL TRANSFORMATION MATRIX FOR 90-DEGREE ROTATION
         // Swap the axes and mirror the horizontal scale to convert Portrait to Landscape
         data->point.x = raw_portrait_y;
-        data->point.y = 720 - 1 - raw_portrait_x; 
+        data->point.y = 720 - 1 - raw_portrait_x;
 
         data->state = LV_INDEV_STATE_PR; // Set state to "Pressed"
     } else {
@@ -956,15 +1105,15 @@ static const int kCanRxPins[] = {CH0_RX, CH1_RX, CH2_RX};
 // Forward declaration of the custom thread runner
 void CockpitCoreProcessor(void *pvParameters) {
   Serial.println("[SYSTEM] High-Memory Telemetry Task Thread bound to Core 1 successfully.");
-  
+
   for(;;) {
-    lv_timer_handler(); 
+    lv_timer_handler();
     refreshUiProfileIfPending();
-    
+
     processInboundFrames(0, "DRIVE TRAIN");
     processInboundFrames(1, "COMFORT");
     processInboundFrames(2, "INFOTAINMENT");
-    
+
     updateUIElements();
     runAcousticAlertEngine();
 
@@ -1000,14 +1149,14 @@ void CockpitCoreProcessor(void *pvParameters) {
 
     // ASYNCHRONOUS TELEMETRY WEB STREAM OVERLAY (100ms / 10Hz)
     static uint32_t last_timer_tick = 0;
-    if (millis() - last_timer_tick > 100) { 
+    if (millis() - last_timer_tick > 100) {
       last_timer_tick = millis();
-      
+
       // Only write to the buffer if Core 0 has dispatched the previous packet.
       // Use relaxed load here – we only need the acquire on the read side in loop().
-      if (!ws_payload_ready.load(std::memory_order_relaxed)) { 
-        static JsonDocument doc; 
-        doc.clear(); 
+      if (!ws_payload_ready.load(std::memory_order_relaxed)) {
+        static JsonDocument doc;
+        doc.clear();
 
         // C-4: Snapshot metrics under the spinlock to prevent torn reads from
         //      Core 0's runBenchTelemetrySimulation writing concurrently.
@@ -1030,35 +1179,84 @@ void CockpitCoreProcessor(void *pvParameters) {
           xSemaphoreGive(g_interpreter_mutex);
         }
 
-        doc["rpm"]   = m_snap.engine_rpm;
-        doc["boost"] = m_snap.boost_bar;
-        doc["peak"]  = m_snap.peak_boost_bar;
-        doc["oil"]   = m_snap.oil_temp;
-        doc["h2o"]   = m_snap.coolant_temp;
-        doc["car"]   = car_name;
-        doc["brand"] = car_brand;
-        doc["bus"]   = car_bus;
-        doc["year"]  = car_year;
-        doc["spd"]   = m_snap.vehicle_speed;
-        doc["thr"]   = m_snap.throttle_pct;
-        doc["ext"]   = m_snap.exterior_temp;
-        doc["dd"]    = m_snap.driver_door_open;
-        doc["pd"]    = m_snap.passenger_door_open;
-        doc["rld"]   = m_snap.rear_left_door_open;
-        doc["rrd"]   = m_snap.rear_right_door_open;
-        doc["hb"]    = m_snap.handbrake_active;
-        doc["mmi"]   = m_snap.mmi_key_code;
-        doc["tgt"]   = m_snap.target_temp;
-        
-        serializeJson(doc, global_ws_buffer, sizeof(global_ws_buffer));
-        
+        char gear_label[24];
+        formatGearLabel(m_snap, gear_label, sizeof(gear_label));
+
+        doc["rpm"]      = m_snap.engine_rpm;
+        doc["boost"]    = m_snap.boost_bar;
+        doc["peak"]     = m_snap.peak_boost_bar;
+        doc["oil"]      = m_snap.oil_temp;
+        doc["h2o"]      = m_snap.coolant_temp;
+        doc["car"]      = car_name;
+        doc["brand"]    = car_brand;
+        doc["bus"]      = car_bus;
+        doc["year"]     = car_year;
+        doc["spd"]      = m_snap.vehicle_speed;
+        doc["thr"]      = m_snap.throttle_pct;
+        doc["ext"]      = m_snap.exterior_temp;
+        doc["dd"]       = m_snap.driver_door_open;
+        doc["pd"]       = m_snap.passenger_door_open;
+        doc["rld"]      = m_snap.rear_left_door_open;
+        doc["rrd"]      = m_snap.rear_right_door_open;
+        doc["hb"]       = m_snap.handbrake_active;
+        doc["mmi"]      = m_snap.mmi_key_code;
+        doc["mmi_name"] = decodeMmiKey(m_snap.mmi_key_code);
+        doc["tgt"]      = m_snap.target_temp;
+        doc["gear_ok"]  = m_snap.gear_position_known;
+        doc["gear_label"] = gear_label;
+        doc["mode_name"] = availabilityLabel(m_snap.sport_mode_known, m_snap.sport_mode_active, "SPORT", "NORMAL");
+        doc["odo"]      = m_snap.odometer_km;
+        doc["odo_ok"]   = m_snap.odometer_valid;
+        doc["li"]       = m_snap.left_indicator_active;
+        doc["li_ok"]    = m_snap.left_indicator_known;
+        doc["ri"]       = m_snap.right_indicator_active;
+        doc["ri_ok"]    = m_snap.right_indicator_known;
+        doc["park"]     = m_snap.parking_lights_active;
+        doc["park_ok"]  = m_snap.parking_lights_known;
+        doc["low"]      = m_snap.low_beam_active;
+        doc["low_ok"]   = m_snap.low_beam_known;
+        doc["high"]     = m_snap.high_beam_active;
+        doc["high_ok"]  = m_snap.high_beam_known;
+        doc["int"]      = m_snap.interior_lights_active;
+        doc["int_ok"]   = m_snap.interior_lights_known;
+        doc["src_ok"]   = m_snap.infotainment_source_known;
+        doc["src_name"] = m_snap.infotainment_source_known ? infotainmentSourceLabel(m_snap.infotainment_source_code) : "UNAVAILABLE";
+        doc["trk"]      = m_snap.infotainment_track;
+        doc["trk_ok"]   = m_snap.infotainment_track_known;
+        doc["phone"]    = m_snap.phone_call_active;
+        doc["phone_ok"] = m_snap.phone_call_known;
+        doc["mil"]      = m_snap.mil_active;
+        doc["mil_ok"]   = m_snap.mil_status_known;
+        doc["dtc"]      = m_snap.stored_dtc_count;
+        doc["volt"]     = m_snap.control_module_voltage;
+        doc["volt_ok"]  = m_snap.control_module_voltage_known;
+        doc["diag_seen"] = m_snap.diagnostics_seen;
+        doc["diag_svc"] = m_snap.last_diag_service;
+        doc["diag_pid"] = m_snap.last_diag_pid;
+        doc["diag_src"] = m_snap.last_diag_source;
+        doc["diag_cnt"] = m_snap.diag_response_counter;
+
+        const size_t payload_bytes = measureJson(doc) + 1; // include null terminator
+        if (payload_bytes > sizeof(global_ws_buffer)) {
+          const int written = snprintf(global_ws_buffer, sizeof(global_ws_buffer),
+            "{\"ok\":false,\"msg\":\"Telemetry payload (%u bytes) exceeded buffer capacity (%u bytes)\"}",
+            (unsigned)payload_bytes,
+            (unsigned)sizeof(global_ws_buffer));
+          if (written < 0 || (size_t)written >= sizeof(global_ws_buffer)) {
+            strncpy(global_ws_buffer, "{\"ok\":false,\"msg\":\"Telemetry payload exceeded websocket buffer\"}", sizeof(global_ws_buffer));
+            global_ws_buffer[sizeof(global_ws_buffer) - 1] = '\0';
+          }
+        } else {
+          serializeJson(doc, global_ws_buffer, sizeof(global_ws_buffer));
+        }
+
         // C-2: Release store ensures all preceding writes to global_ws_buffer
         //      are visible to Core 0 before it observes ws_payload_ready = true.
         ws_payload_ready.store(true, std::memory_order_release);
       }
     }
-    
-    vTaskDelay(pdMS_TO_TICKS(1)); 
+
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
@@ -1069,12 +1267,12 @@ void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
 
     // Strict blocking loop: Forces the ESP32 to wait until the PC monitor opens!
-    delay(500); 
+    delay(500);
 
   // 2. STABILISATION GATE: Gives your PC's USB port time to fully connect
   // (Flushes any phantom data out of the line so your text can print)
   for (int i = 5; i > 0; i--) {
-      delay(400); 
+      delay(400);
       Serial.printf("[BOOT] Initializing terminal interface... Ready in %d seconds.\n", i);
   }
 
@@ -1091,7 +1289,7 @@ void setup() {
   // or active_vehicle_profile.
   g_interpreter_mutex = xSemaphoreCreateMutex();
 
-   delay(200); 
+   delay(200);
 
   sys_ctx->interpreter = new GenericVehicleInterpreter();
    delay(200);
@@ -1111,7 +1309,7 @@ void setup() {
 
   if (!system_safe) {
     Serial.println("\n[CRITICAL ERROR] Transceiver hardware diagnostic check failed!");
-    while(1) delay(1000); 
+    while(1) delay(1000);
   }
 
   // 2. PRODUCTION TWAI INTERFACE STARTUP
@@ -1126,7 +1324,7 @@ void setup() {
   if (requestVehicleVIN(global_vin, sizeof(global_vin))) {
       Serial.print("[SYSTEM] SUCCESS! Detected Car VIN: ");
       Serial.println(global_vin);
-      
+
       // Call the dynamic parsing matrix safely
       decodeAndPrintVehicleIdentity(global_vin);
   } else {
@@ -1166,25 +1364,25 @@ void setup() {
   disp_drv.hor_res = DISP_HOR_RES;
   disp_drv.ver_res = DISP_VER_RES;
   disp_drv.draw_buf = &draw_buf;
-  disp_drv.flush_cb = dummy_display_flush; 
-  
+  disp_drv.flush_cb = dummy_display_flush;
+
   // FORCE LANDSCAPE ORIENTATION: Rotates the visual matrix 90 degrees clockwise
-  disp_drv.rotated = LV_DISP_ROT_90; 
-  
+  disp_drv.rotated = LV_DISP_ROT_90;
+
   // Register the driver inside the master LVGL engine
   lv_disp_drv_register(&disp_drv);
 
 // 4. GT911 CAPACITIVE TOUCH INTERFACE INITIALIZATION
   lv_indev_drv_init(&indev_drv);
-  
+
   // Define this input device type as a Touchpad panel
-  indev_drv.type = LV_INDEV_TYPE_POINTER; 
-  
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+
   // Bind your landscape transformation math callback routine
-  indev_drv.read_cb = landscape_touch_read_cb; 
-  
+  indev_drv.read_cb = landscape_touch_read_cb;
+
   // FIX: Changed from lv_indev_register to lv_indev_drv_register
-  lv_indev_drv_register(&indev_drv); 
+  lv_indev_drv_register(&indev_drv);
 
   // Now it is completely safe to construct horizontal visual elements
   buildCockpitUI();
@@ -1198,7 +1396,7 @@ void setup() {
     &CockpitTaskHandle,       // Thread handle tracking variable
     1                         // Pin to Core 1
   );
-  
+
   Serial.println("=== SYSTEM PRE-FLIGHT INITIALIZATION COMPLETED CLEANLY ===");
 }
 
@@ -1266,6 +1464,7 @@ void loop() {
 
   processQueuedPasswordChange();
   runFullBenchVinTestStep();
+  queuePassiveDiagnosticPoll();
 
   // --- FIXED TELEMETRY SWEEP INTERFACE GATING ---
   // (Removed the network family restrictions so it continues sweeping across ALL bench testing profiles!)
@@ -1447,8 +1646,30 @@ static const char* decodeMmiKey(uint8_t code) {
   }
 }
 
+static void formatGearLabel(const LiveTelemetryMetrics& m, char* out, size_t out_size) {
+  if (!m.gear_position_known) {
+    snprintf(out, out_size, "UNAVAILABLE");
+    return;
+  }
+
+  const char* selector = gearSelectorPositionLabel(m.gear_position);
+  if (m.selected_gear_known && (m.gear_position == GEAR_SELECTOR_DRIVE || m.gear_position == GEAR_SELECTOR_SPORT || m.gear_position == GEAR_SELECTOR_MANUAL)) {
+    snprintf(out, out_size, "%s%u", selector, m.selected_gear);
+  } else {
+    snprintf(out, out_size, "%s", selector);
+  }
+}
+
+static void formatDiagnosticResponseLabel(const LiveTelemetryMetrics& m, char* out, size_t out_size) {
+  if (!m.diagnostics_seen) {
+    snprintf(out, out_size, "UNAVAILABLE");
+    return;
+  }
+  snprintf(out, out_size, "ECU 0x%03X / 0x%02X / 0x%02X", m.last_diag_source, m.last_diag_service, m.last_diag_pid);
+}
+
 void updateUIElements() {
-  char buf[64];
+  char buf[96]; // Largest 3-line throttle/gear/mode summary stays well under this bound.
 
   // C-4: Snapshot the entire metrics struct under the spinlock so we never
   //      observe a torn value from Core 0's runBenchTelemetrySimulation.
@@ -1487,56 +1708,105 @@ void updateUIElements() {
   lv_label_set_text(lbl_temps_val, buf);
 
   // 4. Speed and throttle readouts (Tab 1)
-  snprintf(buf, sizeof(buf), "SPD: %.1f km/h", m.vehicle_speed);
+  char gear_buf[24];
+  formatGearLabel(m, gear_buf, sizeof(gear_buf));
+  if (m.odometer_valid) {
+    snprintf(buf, sizeof(buf), "SPD: %.1f km/h\nODO: %.1f km", m.vehicle_speed, m.odometer_km);
+  } else {
+    snprintf(buf, sizeof(buf), "SPD: %.1f km/h\nODO: UNAVAILABLE", m.vehicle_speed);
+  }
   lv_label_set_text(lbl_speed_val, buf);
 
-  snprintf(buf, sizeof(buf), "THR: %.0f%%", m.throttle_pct);
+  snprintf(buf, sizeof(buf), "THR: %.0f%%\nGEAR: %s\nMODE: %s",
+    m.throttle_pct,
+    gear_buf,
+    availabilityLabel(m.sport_mode_known, m.sport_mode_active, "SPORT", "NORMAL"));
   lv_label_set_text(lbl_throttle_val, buf);
 
-  // 5. Comfort tab — door grid + handbrake + target temp (Tab 2)
-  char comfort_buf[192];
+  // 5. Comfort tab — doors, indicators, lights, handbrake and climate (Tab 2)
+  char comfort_buf[256];
   snprintf(comfort_buf, sizeof(comfort_buf),
     "DRIVER:    %s\n"
     "PASSENGER: %s\n"
     "REAR LEFT: %s\n"
     "REAR RIGHT:%s\n"
+    "LEFT IND:  %s\n"
+    "RIGHT IND: %s\n"
     "HANDBRAKE: %s\n"
     "TGT TEMP:  %.1f C",
-    m.driver_door_open    ? "OPEN" : "CLOSED",
-    m.passenger_door_open ? "OPEN" : "CLOSED",
-    m.rear_left_door_open ? "OPEN" : "CLOSED",
-    m.rear_right_door_open? "OPEN" : "CLOSED",
-    m.handbrake_active    ? "ON"   : "OFF",
+    openClosedLabel(m.driver_door_open),
+    openClosedLabel(m.passenger_door_open),
+    openClosedLabel(m.rear_left_door_open),
+    openClosedLabel(m.rear_right_door_open),
+    availabilityLabel(m.left_indicator_known, m.left_indicator_active, "ACTIVE", "OFF"),
+    availabilityLabel(m.right_indicator_known, m.right_indicator_active, "ACTIVE", "OFF"),
+    m.handbrake_active ? "ON" : "OFF",
     m.target_temp);
   lv_label_set_text(label_comfort, comfort_buf);
 
-  snprintf(buf, sizeof(buf), "EXT TEMP: %.1f C", m.exterior_temp);
-  lv_label_set_text(lbl_comfort_climate, buf);
+  char climate_buf[192];
+  snprintf(climate_buf, sizeof(climate_buf),
+    "EXT TEMP: %.1f C\n"
+    "PARK:     %s\n"
+    "LOW BEAM: %s\n"
+    "HIGH BEAM:%s\n"
+    "CABIN:    %s",
+    m.exterior_temp,
+    availabilityLabel(m.parking_lights_known, m.parking_lights_active, "ON", "OFF"),
+    availabilityLabel(m.low_beam_known, m.low_beam_active, "ON", "OFF"),
+    availabilityLabel(m.high_beam_known, m.high_beam_active, "ON", "OFF"),
+    availabilityLabel(m.interior_lights_known, m.interior_lights_active, "ON", "OFF"));
+  lv_label_set_text(lbl_comfort_climate, climate_buf);
 
-  // 6. Infotainment tab — decoded MMI + rate-limited platform info (Tab 3)
+  // 6. Infotainment tab — decoded MMI + grouped media/phone state (Tab 3)
   snprintf(buf, sizeof(buf), "MMI: 0x%02X  [%s]", m.mmi_key_code, decodeMmiKey(m.mmi_key_code));
   lv_label_set_text(label_infotainment, buf);
 
   uint32_t now = millis();
   if (now - ui_last_info_refresh >= 2000) {
     ui_last_info_refresh = now;
-    char info_buf[128];
+    char info_buf[192];
+    char track_buf[24];
+    if (m.infotainment_track_known) {
+      snprintf(track_buf, sizeof(track_buf), "%u", m.infotainment_track);
+    } else {
+      snprintf(track_buf, sizeof(track_buf), "UNAVAILABLE");
+    }
+
     // Read model name under interpreter mutex (non-blocking trylock — skip if busy)
     if (xSemaphoreTake(g_interpreter_mutex, 0) == pdTRUE) {
       const char *mdl  = active_vehicle_profile.model_name[0] ? active_vehicle_profile.model_name : "UNKNOWN";
       const char *bus  = active_vehicle_profile.electrical_bus[0] ? active_vehicle_profile.electrical_bus : "---";
-      snprintf(info_buf, sizeof(info_buf), "MODEL: %s\nBUS:   %s", mdl, bus);
+      snprintf(info_buf, sizeof(info_buf),
+        "MODEL:  %s\n"
+        "BUS:    %s\n"
+        "SOURCE: %s\n"
+        "TRACK:  %s\n"
+        "PHONE:  %s",
+        mdl,
+        bus,
+        m.infotainment_source_known ? infotainmentSourceLabel(m.infotainment_source_code) : "UNAVAILABLE",
+        track_buf,
+        availabilityLabel(m.phone_call_known, m.phone_call_active, "ACTIVE", "IDLE"));
       xSemaphoreGive(g_interpreter_mutex);
     } else {
-      snprintf(info_buf, sizeof(info_buf), "MODEL: (updating)\nBUS:   ---");
+      snprintf(info_buf, sizeof(info_buf), "MODEL:  (updating)\nBUS:    ---\nSOURCE: UNAVAILABLE\nTRACK:  UNAVAILABLE\nPHONE:  UNAVAILABLE");
     }
     lv_label_set_text(lbl_infomt_detail, info_buf);
   }
 
-  // 7. Diagnostic tab — vehicle identity + heap stats (Tab 4, rate-limited 5 s)
+  // 7. Diagnostic tab — identity + user-facing diagnostic status (Tab 4, rate-limited 5 s)
   if (now - ui_last_diag_refresh >= 5000) {
     ui_last_diag_refresh = now;
-    char diag_buf[256];
+    char diag_buf[384];
+    char diag_resp_buf[48];
+    char dtc_buf[24];
+    char volt_buf[24];
+    formatDiagnosticResponseLabel(m, diag_resp_buf, sizeof(diag_resp_buf));
+    if (m.mil_status_known) snprintf(dtc_buf, sizeof(dtc_buf), "%u", m.stored_dtc_count);
+    else snprintf(dtc_buf, sizeof(dtc_buf), "UNAVAILABLE");
+    if (m.control_module_voltage_known) snprintf(volt_buf, sizeof(volt_buf), "%.2f V", m.control_module_voltage);
+    else snprintf(volt_buf, sizeof(volt_buf), "UNAVAILABLE");
     uint32_t heap  = ESP.getFreeHeap();
     uint32_t psram = ESP.getFreePsram();
     uint32_t up    = millis() / 1000;
@@ -1550,14 +1820,23 @@ void updateUIElements() {
         "MODEL:  %s\n"
         "BUS:    %s\n"
         "YEAR:   %u\n"
+        "MIL:    %s\n"
+        "DTCS:   %s\n"
+        "VBAT:   %s\n"
+        "LAST:   %s\n"
         "HEAP:   %lu B\n"
         "PSRAM:  %lu B\n"
         "UPTIME: %lus",
-        brand, mdl, bus, yr, heap, psram, (unsigned long)up);
+        brand, mdl, bus, yr,
+        availabilityLabel(m.mil_status_known, m.mil_active, "ON", "OFF"),
+        dtc_buf, volt_buf, diag_resp_buf,
+        heap, psram, (unsigned long)up);
       xSemaphoreGive(g_interpreter_mutex);
     } else {
       snprintf(diag_buf, sizeof(diag_buf),
-        "HEAP:   %lu B\nPSRAM:  %lu B\nUPTIME: %lus",
+        "MIL:    %s\nDTCS:   %s\nVBAT:   %s\nLAST:   %s\nHEAP:   %lu B\nPSRAM:  %lu B\nUPTIME: %lus",
+        availabilityLabel(m.mil_status_known, m.mil_active, "ON", "OFF"),
+        dtc_buf, volt_buf, diag_resp_buf,
         heap, psram, (unsigned long)up);
     }
     lv_label_set_text(lbl_diag, diag_buf);
@@ -1567,9 +1846,9 @@ void updateUIElements() {
 // Remote touch data receiver
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   // Strict Null Pointer Safety Guard. Drop execution if invalid.
-  if (client == NULL) return; 
+  if (client == NULL) return;
 
-  if (type == WS_EVT_DATA) { 
+  if (type == WS_EVT_DATA) {
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
     if (info != NULL && info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
       // C-3: Copy into a local buffer instead of writing data[len]=0, which
@@ -1692,18 +1971,18 @@ static void handlePasswordCancelTouch(lv_event_t * e) {
 // --- ACTIVE UDS DIAGNOSTIC VIN EXTRACTION ---
 bool requestVehicleVIN(char* vinBuffer, size_t bufferSize) {
     if (bufferSize < 18) return false; // VIN is strictly 17 characters + null terminator
-    
+
     twai_message_t tx_msg;
     tx_msg.identifier = 0x7E0;  // Standard Engine ECU Diagnostic Request ID
     tx_msg.extd = 0;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    
+
     // ISO-TP Single Frame: 3 bytes payload follow (Service 0x22, DID 0xF190)
-    tx_msg.data[0] = 0x03; 
-    tx_msg.data[1] = 0x22; 
-    tx_msg.data[2] = 0xF1; 
-    tx_msg.data[3] = 0x90; 
+    tx_msg.data[0] = 0x03;
+    tx_msg.data[1] = 0x22;
+    tx_msg.data[2] = 0xF1;
+    tx_msg.data[3] = 0x90;
     for(int i=4; i<8; i++) tx_msg.data[i] = 0xAA; // Padding
 
     // Fire request out on Channel 0 (Drive Train Bus)
@@ -1721,7 +2000,7 @@ bool requestVehicleVIN(char* vinBuffer, size_t bufferSize) {
     while (millis() - startTime < 1500 && charsCollected < 17) {
         if (twai_receive_v2(twai_ports[0], &rx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
             if (rx_msg.identifier == 0x7E8) { // Engine ECU Diagnostic Response
-                
+
                 // Case A: ISO-TP First Frame (0x10) - Indicates data payload is splitting up
                 if ((rx_msg.data[0] & 0xF0) == 0x10) {
                     // Extract initial string segment bytes safely starting at index 5
@@ -1740,7 +2019,7 @@ bool requestVehicleVIN(char* vinBuffer, size_t bufferSize) {
                     fc_msg.data[1] = 0x00; // Block Size = 0 (Send all)
                     fc_msg.data[2] = 0x00; // Separation Time = 0ms (Max Speed)
                     for(int i=3; i<8; i++) fc_msg.data[i] = 0xAA;
-                    
+
                     twai_transmit_v2(twai_ports[0], &fc_msg, pdMS_TO_TICKS(50));
                     flowControlSent = true;
                 }
@@ -1757,7 +2036,7 @@ bool requestVehicleVIN(char* vinBuffer, size_t bufferSize) {
     }
 
     if (charsCollected == 17) {
-      vinBuffer[charsCollected] = '\0'; 
+      vinBuffer[charsCollected] = '\0';
       return true;
   }
     return false;
@@ -1768,13 +2047,13 @@ bool requestVehicleVIN(char* vinBuffer, size_t bufferSize) {
 // -------------------------------------------------------------
 bool runBootDiagnostic(int port_idx, int tx_pin, int rx_pin, const char* label) {
   twai_general_config_t g_cfg = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)tx_pin, (gpio_num_t)rx_pin, TWAI_MODE_NO_ACK);
-  
-  // Set the structural hardware controller index directly 
-  g_cfg.controller_id = port_idx; 
-  
+
+  // Set the structural hardware controller index directly
+  g_cfg.controller_id = port_idx;
+
   twai_timing_config_t t_cfg = TWAI_TIMING_CONFIG_500KBITS();
   twai_filter_config_t f_cfg = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-  
+
   twai_handle_t temp_handle;
   // Removed invalid (twai_port_num_t) typecast
   if (twai_driver_install_v2(&g_cfg, &t_cfg, &f_cfg, &temp_handle) != ESP_OK) return false;
@@ -1782,7 +2061,7 @@ bool runBootDiagnostic(int port_idx, int tx_pin, int rx_pin, const char* label) 
 
   twai_status_info_t status;
   twai_get_status_info_v2(temp_handle, &status);
-  
+
   twai_stop_v2(temp_handle);
   twai_driver_uninstall_v2(temp_handle);
   return (status.state != TWAI_STATE_BUS_OFF);
@@ -1810,244 +2089,244 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
     active_vehicle_profile.network_generation = SERIES_UNKNOWN; // Reset baseline safety state
 
     // --- AUDI DIVISION MAPPINGS ---
-    if (strcmp(chassis, "8P") == 0) { 
-        active_vehicle_profile.model_name = "Audi A3 / S3 (Mk2 Platform)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 LEGACY"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    if (strcmp(chassis, "8P") == 0) {
+        active_vehicle_profile.model_name = "Audi A3 / S3 (Mk2 Platform)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 LEGACY";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "8V") == 0) { 
-        active_vehicle_profile.model_name = "Audi A3 / S3 / RS3 (MQB Matrix)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "8V") == 0) {
+        active_vehicle_profile.model_name = "Audi A3 / S3 / RS3 (MQB Matrix)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "GY") == 0 || strcmp(chassis, "8Y") == 0) { 
-        active_vehicle_profile.model_name = "Audi A3 / S3 / RS3 (MQB EVO 8Y)"; 
-        active_vehicle_profile.electrical_bus = "MQB EVO CAN-FD/CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "GY") == 0 || strcmp(chassis, "8Y") == 0) {
+        active_vehicle_profile.model_name = "Audi A3 / S3 / RS3 (MQB EVO 8Y)";
+        active_vehicle_profile.electrical_bus = "MQB EVO CAN-FD/CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "8K") == 0) { 
-        active_vehicle_profile.model_name = "Audi A4 / S4 / RS4 (MLB B8)"; 
-        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "8K") == 0) {
+        active_vehicle_profile.model_name = "Audi A4 / S4 / RS4 (MLB B8)";
+        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "8W") == 0 || strcmp(chassis, "F4") == 0) { 
-        active_vehicle_profile.model_name = "Audi A4 / S4 / A5 / RS5 (MLB B9)"; 
-        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "8W") == 0 || strcmp(chassis, "F4") == 0) {
+        active_vehicle_profile.model_name = "Audi A4 / S4 / A5 / RS5 (MLB B9)";
+        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "4F") == 0) { 
-        active_vehicle_profile.model_name = "Audi A6 / S6 / RS6 (C6 Era)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "4F") == 0) {
+        active_vehicle_profile.model_name = "Audi A6 / S6 / RS6 (C6 Era)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "4G") == 0) { 
-        active_vehicle_profile.model_name = "Audi A6 / S6 / A7 / RS7 (MLB C7)"; 
-        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "4G") == 0) {
+        active_vehicle_profile.model_name = "Audi A6 / S6 / A7 / RS7 (MLB C7)";
+        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "4K") == 0) { 
-        active_vehicle_profile.model_name = "Audi A6 / A7 / RS6 / RS7 (MLB C8)"; 
-        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "4K") == 0) {
+        active_vehicle_profile.model_name = "Audi A6 / A7 / RS6 / RS7 (MLB C8)";
+        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "8T") == 0 || strcmp(chassis, "8F") == 0) { 
-        active_vehicle_profile.model_name = "Audi A5 / S5 / RS5 (B8 Chassis)"; 
-        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "8T") == 0 || strcmp(chassis, "8F") == 0) {
+        active_vehicle_profile.model_name = "Audi A5 / S5 / RS5 (B8 Chassis)";
+        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "4H") == 0) { 
-        active_vehicle_profile.model_name = "Audi A8 / S8 (D4 Luxury)"; 
-        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "4H") == 0) {
+        active_vehicle_profile.model_name = "Audi A8 / S8 (D4 Luxury)";
+        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "4N") == 0) { 
-        active_vehicle_profile.model_name = "Audi A8 / S8 (D5 Luxury)"; 
-        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "4N") == 0) {
+        active_vehicle_profile.model_name = "Audi A8 / S8 (D5 Luxury)";
+        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "8U") == 0) { 
-        active_vehicle_profile.model_name = "Audi Q3 Compact SUV (PQ35)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED CAN-TP2.0"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "8U") == 0) {
+        active_vehicle_profile.model_name = "Audi Q3 Compact SUV (PQ35)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED CAN-TP2.0";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "F3") == 0) { 
-        active_vehicle_profile.model_name = "Audi Q3 / RS Q3 (MQB Crossover)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "F3") == 0) {
+        active_vehicle_profile.model_name = "Audi Q3 / RS Q3 (MQB Crossover)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "8R") == 0) { 
-        active_vehicle_profile.model_name = "Audi Q5 SUV (Original 8R)"; 
-        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "8R") == 0) {
+        active_vehicle_profile.model_name = "Audi Q5 SUV (Original 8R)";
+        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "FY") == 0) { 
-        active_vehicle_profile.model_name = "Audi Q5 / SQ5 (MLB FY Platform)"; 
-        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "FY") == 0) {
+        active_vehicle_profile.model_name = "Audi Q5 / SQ5 (MLB FY Platform)";
+        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "4L") == 0) { 
-        active_vehicle_profile.model_name = "Audi Q7 SUV (PQ47 4L Chassis)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "4L") == 0) {
+        active_vehicle_profile.model_name = "Audi Q7 SUV (PQ47 4L Chassis)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "4M") == 0) { 
-        active_vehicle_profile.model_name = "Audi Q7 / SQ7 / Q8 / SQ8 / RSQ8"; 
-        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "4M") == 0) {
+        active_vehicle_profile.model_name = "Audi Q7 / SQ7 / Q8 / SQ8 / RSQ8";
+        active_vehicle_profile.electrical_bus = "MLB EVO FLEXRAY/CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "8J") == 0) { 
-        active_vehicle_profile.model_name = "Audi TT / TTS / TT RS (Mk2)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 MOTORWAY"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "8J") == 0) {
+        active_vehicle_profile.model_name = "Audi TT / TTS / TT RS (Mk2)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 MOTORWAY";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "8S") == 0) { 
-        active_vehicle_profile.model_name = "Audi TT / TTS / TT RS (Mk3 MQB)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "8S") == 0) {
+        active_vehicle_profile.model_name = "Audi TT / TTS / TT RS (Mk3 MQB)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "GA") == 0) { 
-        active_vehicle_profile.model_name = "Audi Q2 Compact Crossover"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "GA") == 0) {
+        active_vehicle_profile.model_name = "Audi Q2 Compact Crossover";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "8X") == 0) { 
-        active_vehicle_profile.model_name = "Audi A1 Supermini (PQ25)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 COMPACT"; 
-        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA; 
+    else if (strcmp(chassis, "8X") == 0) {
+        active_vehicle_profile.model_name = "Audi A1 Supermini (PQ25)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 COMPACT";
+        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA;
     }
-    else if (strcmp(chassis, "GB") == 0) { 
-        active_vehicle_profile.model_name = "Audi A1 Sportback (MQB A0)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA; 
+    else if (strcmp(chassis, "GB") == 0) {
+        active_vehicle_profile.model_name = "Audi A1 Sportback (MQB A0)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA;
     }
 
     // --- VOLKSWAGEN DIVISION MAPPINGS ---
-    else if (strcmp(chassis, "1K") == 0 || strcmp(chassis, "5K") == 0 || strcmp(chassis, "AJ") == 0) { 
-        active_vehicle_profile.model_name = "VW Golf Mk5 / Mk6 / Jetta"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 POWERTRAIN"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "1K") == 0 || strcmp(chassis, "5K") == 0 || strcmp(chassis, "AJ") == 0) {
+        active_vehicle_profile.model_name = "VW Golf Mk5 / Mk6 / Jetta";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 POWERTRAIN";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "5G") == 0 || strcmp(chassis, "BA") == 0 || strcmp(chassis, "AM") == 0 || strcmp(chassis, "AU") == 0) { 
-        active_vehicle_profile.model_name = "VW Golf Mk7 / GTI / Golf R (MQB)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "5G") == 0 || strcmp(chassis, "BA") == 0 || strcmp(chassis, "AM") == 0 || strcmp(chassis, "AU") == 0) {
+        active_vehicle_profile.model_name = "VW Golf Mk7 / GTI / Golf R (MQB)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "CD") == 0) { 
-        active_vehicle_profile.model_name = "VW Golf Mk8 / GTI / Clubsport / R"; 
-        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "CD") == 0) {
+        active_vehicle_profile.model_name = "VW Golf Mk8 / GTI / Clubsport / R";
+        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "3C") == 0 || strcmp(chassis, "AN") == 0) { 
-        active_vehicle_profile.model_name = "VW Passat B6 / B7 / CC"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "3C") == 0 || strcmp(chassis, "AN") == 0) {
+        active_vehicle_profile.model_name = "VW Passat B6 / B7 / CC";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "3G") == 0 || strcmp(chassis, "CB") == 0) { 
-        active_vehicle_profile.model_name = "VW Passat B8 (MQB)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "3G") == 0 || strcmp(chassis, "CB") == 0) {
+        active_vehicle_profile.model_name = "VW Passat B8 (MQB)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "A3") == 0) { 
-        active_vehicle_profile.model_name = "VW Passat B9 (MQB EVO)"; 
-        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "A3") == 0) {
+        active_vehicle_profile.model_name = "VW Passat B9 (MQB EVO)";
+        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "13") == 0) { 
-        active_vehicle_profile.model_name = "VW Scirocco Coupe"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INTERFACE"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "13") == 0) {
+        active_vehicle_profile.model_name = "VW Scirocco Coupe";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INTERFACE";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "5N") == 0) { 
-        active_vehicle_profile.model_name = "VW Tiguan SUV (Mk1)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INTERFACE"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "5N") == 0) {
+        active_vehicle_profile.model_name = "VW Tiguan SUV (Mk1)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INTERFACE";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
 
-    else if (strcmp(chassis, "AD") == 0 || strcmp(chassis, "AX") == 0) { 
-        active_vehicle_profile.model_name = "VW Tiguan Mk2 (MQB)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "AD") == 0 || strcmp(chassis, "AX") == 0) {
+        active_vehicle_profile.model_name = "VW Tiguan Mk2 (MQB)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "CT") == 0) { 
-        active_vehicle_profile.model_name = "VW Tiguan Mk3 (MQB EVO)"; 
-        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "CT") == 0) {
+        active_vehicle_profile.model_name = "VW Tiguan Mk3 (MQB EVO)";
+        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "6R") == 0 || strcmp(chassis, "6C") == 0) { 
-        active_vehicle_profile.model_name = "VW Polo Hatchback (PQ25)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 COMPACT"; 
-        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA; 
+    else if (strcmp(chassis, "6R") == 0 || strcmp(chassis, "6C") == 0) {
+        active_vehicle_profile.model_name = "VW Polo Hatchback (PQ25)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 COMPACT";
+        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA;
     }
-    else if (strcmp(chassis, "AW") == 0) { 
-        active_vehicle_profile.model_name = "VW Polo GTI / Hatch (MQB A0)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA; 
+    else if (strcmp(chassis, "AW") == 0) {
+        active_vehicle_profile.model_name = "VW Polo GTI / Hatch (MQB A0)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA;
     }
-    else if (strcmp(chassis, "3H") == 0) { 
-        active_vehicle_profile.model_name = "VW Arteon Fastback Coupe"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "3H") == 0) {
+        active_vehicle_profile.model_name = "VW Arteon Fastback Coupe";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
 
     // --- SEAT / CUPRA DIVISION MAPPINGS ---
-    else if (strcmp(chassis, "1P") == 0) { 
-        active_vehicle_profile.model_name = "Seat Leon Cupra (Mk2 PQ35)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 POWERTRAIN"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "1P") == 0) {
+        active_vehicle_profile.model_name = "Seat Leon Cupra (Mk2 PQ35)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 POWERTRAIN";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "5F") == 0) { 
-        active_vehicle_profile.model_name = "Seat Leon FR / Cupra (Mk3 MQB)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "5F") == 0) {
+        active_vehicle_profile.model_name = "Seat Leon FR / Cupra (Mk3 MQB)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "KL") == 0) { 
-        active_vehicle_profile.model_name = "Cupra Leon / Formentor (MQB EVO)"; 
-        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "KL") == 0) {
+        active_vehicle_profile.model_name = "Cupra Leon / Formentor (MQB EVO)";
+        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "KJ") == 0) { 
-        active_vehicle_profile.model_name = "Seat Ibiza / Arona (MQB A0)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA; 
+    else if (strcmp(chassis, "KJ") == 0) {
+        active_vehicle_profile.model_name = "Seat Ibiza / Arona (MQB A0)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_SMALL_PO_SKODA;
     }
 
     // --- SKODA DIVISION MAPPINGS ---
-    else if (strcmp(chassis, "1Z") == 0) { 
-        active_vehicle_profile.model_name = "Skoda Octavia vRS (Mk2 PQ35)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 POWERTRAIN"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "1Z") == 0) {
+        active_vehicle_profile.model_name = "Skoda Octavia vRS (Mk2 PQ35)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 POWERTRAIN";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "5E") == 0) { 
-        active_vehicle_profile.model_name = "Skoda Octavia vRS (Mk3 MQB)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "5E") == 0) {
+        active_vehicle_profile.model_name = "Skoda Octavia vRS (Mk3 MQB)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "NX") == 0) { 
-        active_vehicle_profile.model_name = "Skoda Octavia vRS (Mk4 MQB EVO)"; 
-        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "NX") == 0) {
+        active_vehicle_profile.model_name = "Skoda Octavia vRS (Mk4 MQB EVO)";
+        active_vehicle_profile.electrical_bus = "MQB EVO HIGH-SPEED CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
-    else if (strcmp(chassis, "3T") == 0) { 
-        active_vehicle_profile.model_name = "Skoda Superb Saloon (3T)"; 
-        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE"; 
-        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY; 
+    else if (strcmp(chassis, "3T") == 0) {
+        active_vehicle_profile.model_name = "Skoda Superb Saloon (3T)";
+        active_vehicle_profile.electrical_bus = "CAN-TP2.0 INFRASTRUCTURE";
+        active_vehicle_profile.network_generation = SERIES_PQ35_46_LEGACY;
     }
-    else if (strcmp(chassis, "3V") == 0) { 
-        active_vehicle_profile.model_name = "Skoda Superb (MQB Matrix)"; 
-        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS; 
+    else if (strcmp(chassis, "3V") == 0) {
+        active_vehicle_profile.model_name = "Skoda Superb (MQB Matrix)";
+        active_vehicle_profile.electrical_bus = "HIGH-SPEED MQB CAN";
+        active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
     }
 
     // --- PORSCHE DIVISION MAPPINGS ---
-    else if (strcmp(chassis, "92") == 0) { 
-        active_vehicle_profile.model_name = "Porsche Cayenne SUV (92A)"; 
-        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "92") == 0) {
+        active_vehicle_profile.model_name = "Porsche Cayenne SUV (92A)";
+        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
-    else if (strcmp(chassis, "9B") == 0) { 
-        active_vehicle_profile.model_name = "Porsche Macan Crossover (95B)"; 
-        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN"; 
-        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS; 
+    else if (strcmp(chassis, "9B") == 0) {
+        active_vehicle_profile.model_name = "Porsche Macan Crossover (95B)";
+        active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
+        active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
     else {
         active_vehicle_profile.model_name = "GENERIC MODEL ARCHITECTURE";
@@ -2118,7 +2397,7 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
         else if (strcmp(chassis, "GA") == 0)  sys_ctx->interpreter = new AudiQ2Interpreter();
         else                                  sys_ctx->interpreter = new GenericVehicleInterpreter();
         Serial.printf("[DECOUPLER] Dynamic Instance Allocation: Group 1 MQB Matrix class loaded for chassis %s\n", chassis);
-    } 
+    }
     // --- GROUP 2: PQ LEGACY INFRASTRUCTURE TRANSLATION CLASS MATRIX ---
     else if (active_vehicle_profile.network_generation == SERIES_PQ35_46_LEGACY) {
         if (strcmp(chassis, "8P") == 0)       sys_ctx->interpreter = new AudiS38PInterpreter();
@@ -2135,7 +2414,7 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
         else if (strcmp(chassis, "3T") == 0)  sys_ctx->interpreter = new SkodaSuperb3TInterpreter();
         else                                  sys_ctx->interpreter = new GenericVehicleInterpreter();
         Serial.printf("[DECOUPLER] Dynamic Instance Allocation: Group 2 PQ Legacy class loaded for chassis %s\n", chassis);
-    } 
+    }
     // --- GROUP 3: MLB LONGITUDINAL INFRASTRUCTURE CLASS MATRIX ---
     else if (active_vehicle_profile.network_generation == SERIES_MLB_LONG_CLASS) {
         if (strcmp(chassis, "8K") == 0)       sys_ctx->interpreter = new AudiA4MLB8KInterpreter();
@@ -2175,13 +2454,13 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
 
 void startTwaiChannel(int port_idx, int tx_pin, int rx_pin) {
   twai_general_config_t g_cfg = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)tx_pin, (gpio_num_t)rx_pin, TWAI_MODE_NORMAL);
-  
+
   // Explicitly map target layout channel assignment to hardware registers
   g_cfg.controller_id = port_idx;
   // Increase the RX queue from the default 5 frames to 64 to absorb burst
   // traffic on a live 500 Kbit/s vehicle CAN bus without losing frames.
   g_cfg.rx_queue_len  = 64;
-  
+
   twai_timing_config_t t_cfg = TWAI_TIMING_CONFIG_500KBITS();
   twai_filter_config_t f_cfg;
 
@@ -2196,7 +2475,7 @@ void startTwaiChannel(int port_idx, int tx_pin, int rx_pin) {
       //      The RX queue is now set to 64 entries (above) to absorb burst
       //      traffic without overrun.
       f_cfg = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-  } 
+  }
   else if (port_idx == 1) {
       // Channel 1: Comfort/Convenience bus — hardware-filter to 0x300–0x3FF.
       //
@@ -2211,7 +2490,7 @@ void startTwaiChannel(int port_idx, int tx_pin, int rx_pin) {
       f_cfg.acceptance_code = (0x300U << CAN_FILTER_ID_SHIFT);
       f_cfg.acceptance_mask = ~(0x700U << CAN_FILTER_ID_SHIFT);
       f_cfg.single_filter = true;
-  } 
+  }
   else if (port_idx == 2) {
       // Channel 2: Infotainment bus — hardware-filter to 0x500–0x5FF.
       // Same three-bit masking strategy as Channel 1; top bits = 0b101 (0x5xx).
@@ -2219,11 +2498,11 @@ void startTwaiChannel(int port_idx, int tx_pin, int rx_pin) {
       f_cfg.acceptance_code = (0x500U << CAN_FILTER_ID_SHIFT);
       f_cfg.acceptance_mask = ~(0x700U << CAN_FILTER_ID_SHIFT);
       f_cfg.single_filter = true;
-  } 
+  }
   else {
       f_cfg = TWAI_FILTER_CONFIG_ACCEPT_ALL();
   }
-  
+
   // L-4: Check the driver install return value; a silently ignored failure
   //      leaves twai_ports[port_idx] uninitialised, causing a crash on start.
   if (twai_driver_install_v2(&g_cfg, &t_cfg, &f_cfg, &twai_ports[port_idx]) != ESP_OK) {
@@ -2297,7 +2576,7 @@ void runAcousticAlertEngine() {
       tone(AUDIO_PWM_PIN, 2500, 150);
       Serial.println("[SAFETY ALERT] Thermal limit breached! Active warning sound output.");
     }
-  } 
+  }
   else {
     if (alarm_sounding) {
       noTone(AUDIO_PWM_PIN);

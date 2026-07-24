@@ -1,5 +1,34 @@
 #include "VehicleInterpreters.h"
 
+static constexpr BoolSignalMapping kCompactComfortSignalMappings[] = {
+    {0x470, 0, 0x01, &LiveTelemetryMetrics::left_indicator_active,  &LiveTelemetryMetrics::left_indicator_known},
+    {0x470, 0, 0x02, &LiveTelemetryMetrics::right_indicator_active, &LiveTelemetryMetrics::right_indicator_known},
+    {0x470, 0, 0x04, &LiveTelemetryMetrics::parking_lights_active,  &LiveTelemetryMetrics::parking_lights_known},
+    {0x470, 0, 0x08, &LiveTelemetryMetrics::low_beam_active,        &LiveTelemetryMetrics::low_beam_known},
+    {0x470, 0, 0x10, &LiveTelemetryMetrics::high_beam_active,       &LiveTelemetryMetrics::high_beam_known},
+    {0x470, 0, 0x20, &LiveTelemetryMetrics::interior_lights_active, &LiveTelemetryMetrics::interior_lights_known},
+};
+
+static constexpr ByteSignalMapping kCompactInfotainmentMappings[] = {
+    {0x6C1, 0, 0xFF, 0, &LiveTelemetryMetrics::infotainment_source_code, &LiveTelemetryMetrics::infotainment_source_known},
+    {0x6C1, 1, 0xFF, 0, &LiveTelemetryMetrics::infotainment_track,       &LiveTelemetryMetrics::infotainment_track_known},
+};
+
+static constexpr BoolSignalMapping kCompactInfotainmentStateMappings[] = {
+    {0x6C1, 2, 0x01, &LiveTelemetryMetrics::phone_call_active, &LiveTelemetryMetrics::phone_call_known},
+};
+
+static constexpr OdometerSignalMapping kCompactOdometerMapping = {0x5A0, 0, 4, 0.1f, true};
+
+static void parseCommonCompactComfort(twai_message_t &msg) {
+    applyBoolSignalMappings(msg, kCompactComfortSignalMappings, sizeof(kCompactComfortSignalMappings) / sizeof(kCompactComfortSignalMappings[0]));
+}
+
+static void parseCommonCompactInfotainment(twai_message_t &msg) {
+    applyByteSignalMappings(msg, kCompactInfotainmentMappings, sizeof(kCompactInfotainmentMappings) / sizeof(kCompactInfotainmentMappings[0]));
+    applyBoolSignalMappings(msg, kCompactInfotainmentStateMappings, sizeof(kCompactInfotainmentStateMappings) / sizeof(kCompactInfotainmentStateMappings[0]));
+}
+
 // =========================================================================
 //  UNIFIED COMPACT DECODING CORE (USED BY ALL SMALL COMPACT CARS)
 // =========================================================================
@@ -44,6 +73,10 @@ static void parseCompactPq25Frame(twai_message_t &msg) {
             break;
         }
     }
+
+    applyGenericGearFrame(msg, 0x540, 0, 1, 0x01);
+    applyOdometerSignalMapping(msg, kCompactOdometerMapping);
+    parsePassiveDiagnosticsFrame(msg);
 }
 
 static void parseCompactMqba0Frame(twai_message_t &msg) {
@@ -54,7 +87,7 @@ static void parseCompactMqba0Frame(twai_message_t &msg) {
             if (msg.data_length_code < 2) break;
             uint16_t low_byte  = (uint16_t)(*(msg.data + 0));
             uint16_t high_byte = (uint16_t)(*(msg.data + 1));
-            sys_ctx->metrics.engine_rpm = ((high_byte << 8) | low_byte) * 0.25; 
+            sys_ctx->metrics.engine_rpm = ((high_byte << 8) | low_byte) * 0.25;
             break;
         }
         case 0x1A2: { // MQB A0 Thermal Indicators
@@ -91,6 +124,10 @@ static void parseCompactMqba0Frame(twai_message_t &msg) {
             break;
         }
     }
+
+    applyGenericGearFrame(msg, 0x540, 0, 1, 0x01);
+    applyOdometerSignalMapping(msg, kCompactOdometerMapping);
+    parsePassiveDiagnosticsFrame(msg);
 }
 
 // =========================================================================
@@ -112,8 +149,9 @@ void AudiA1PQ25Interpreter::interpretComfort(twai_message_t &msg) {
         sys_ctx->metrics.exterior_temp = decode_temperature_offset(msg.data[0]);
     else if (msg.identifier == 0x3BE && msg.data_length_code >= 1)
         sys_ctx->metrics.handbrake_active = (*(msg.data + 0) & 0x10) != 0;
+    parseCommonCompactComfort(msg);
 }
-void AudiA1PQ25Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA1PQ25Interpreter::interpretInfotainment(twai_message_t &msg) { parseCommonCompactInfotainment(msg); }
 void AudiA1PQ25Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -135,8 +173,9 @@ void AudiA1MQBA0Interpreter::interpretComfort(twai_message_t &msg) {
         sys_ctx->metrics.target_temp = *(msg.data + 0) * 0.5f;
     else if (msg.identifier == 0x3BE && msg.data_length_code >= 1)
         sys_ctx->metrics.handbrake_active = (*(msg.data + 0) & 0x10) != 0;
+    parseCommonCompactComfort(msg);
 }
-void AudiA1MQBA0Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA1MQBA0Interpreter::interpretInfotainment(twai_message_t &msg) { parseCommonCompactInfotainment(msg); }
 void AudiA1MQBA0Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(220, 0, 0); // Modern Audi Digital Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -158,8 +197,9 @@ void VwPoloPQ25Interpreter::interpretComfort(twai_message_t &msg) {
         sys_ctx->metrics.exterior_temp = decode_temperature_offset(msg.data[0]);
     else if (msg.identifier == 0x3BE && msg.data_length_code >= 1)
         sys_ctx->metrics.handbrake_active = (*(msg.data + 0) & 0x10) != 0;
+    parseCommonCompactComfort(msg);
 }
-void VwPoloPQ25Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwPoloPQ25Interpreter::interpretInfotainment(twai_message_t &msg) { parseCommonCompactInfotainment(msg); }
 void VwPoloPQ25Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(255, 255, 255); // Clean Instrument White
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -181,8 +221,9 @@ void VwPoloMQBA0Interpreter::interpretComfort(twai_message_t &msg) {
         sys_ctx->metrics.target_temp = *(msg.data + 0) * 0.5f;
     else if (msg.identifier == 0x3BE && msg.data_length_code >= 1)
         sys_ctx->metrics.handbrake_active = (*(msg.data + 0) & 0x10) != 0;
+    parseCommonCompactComfort(msg);
 }
-void VwPoloMQBA0Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwPoloMQBA0Interpreter::interpretInfotainment(twai_message_t &msg) { parseCommonCompactInfotainment(msg); }
 void VwPoloMQBA0Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(0, 100, 220); // VW Racing Blue
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -204,8 +245,9 @@ void SeatIbizaMQBA0Interpreter::interpretComfort(twai_message_t &msg) {
         sys_ctx->metrics.target_temp = *(msg.data + 0) * 0.5f;
     else if (msg.identifier == 0x3BE && msg.data_length_code >= 1)
         sys_ctx->metrics.handbrake_active = (*(msg.data + 0) & 0x10) != 0;
+    parseCommonCompactComfort(msg);
 }
-void SeatIbizaMQBA0Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void SeatIbizaMQBA0Interpreter::interpretInfotainment(twai_message_t &msg) { parseCommonCompactInfotainment(msg); }
 void SeatIbizaMQBA0Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(240, 20, 0); // Seat Sport Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);

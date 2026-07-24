@@ -2,8 +2,8 @@
 
 A modular, extensible real-time CAN bus decoder and vehicle telemetry display system built for ESP32 microcontrollers. Designed to decode, interpret, and visualize automotive CAN bus messages from any CAN-equipped vehicle.
 
-**Current Support:** Volkswagen Group vehicles (Audi, Volkswagen, Skoda, Seat/Cupra, Porsche)  
-**Platform Coverage:** 38 Models vehicle models across 4 major electrical architectures (MQB, PQ-Legacy, MLB, Compact A0)  
+**Current Support:** Volkswagen Group vehicles (Audi, Volkswagen, Skoda, Seat/Cupra, Porsche)
+**Platform Coverage:** 38 Models vehicle models across 4 major electrical architectures (MQB, PQ-Legacy, MLB, Compact A0)
 **Future Support:** Extensible architecture enables support for any CAN-equipped platform
 
 ---
@@ -38,6 +38,7 @@ This project implements a **universal CAN bus decoder** that captures raw CAN fr
 - **Real-time metric parsing** at 1ms tick resolution across multiple independent CAN buses
 - **Dynamic vehicle identification** via VIN decoding (automatically loads correct interpreter)
 - **Modular interpreter pattern** - add new vehicles without touching core logic
+- **Normalized user-facing signal taxonomy** covering drivetrain, gearbox, comfort, infotainment, and diagnostics
 - **Dual-interface display**: Local LVGL touchscreen UI + wireless web dashboard via WebSocket
 - **Safety-critical alarm system** with thermal threshold monitoring and audio alerts
 - **Bench testing simulator** for development without a live vehicle
@@ -54,6 +55,8 @@ The system is designed from the ground up for **platform-agnostic extensibility*
 - ✅ **4 unified decoding cores** (MQB, PQ-Legacy, MLB, Compact) eliminate redundant code
 - ✅ **Real-time metric updates** at 1ms resolution (Core 1 pinned task)
 - ✅ **Bench telemetry simulator** with programmable ramp profiles for testing without vehicle
+- ✅ **Grouped signal coverage** for drivetrain, gearbox, comfort, infotainment, and passive diagnostics
+- ✅ **Human-readable translation layer** for indicators, lighting, drive mode, odometer, media source, and ECU status
 
 ### Vehicle Platform Support
 - ✅ **MQB Matrix** (17 vehicle models) - Modern transverse engines
@@ -64,11 +67,12 @@ The system is designed from the ground up for **platform-agnostic extensibility*
 
 ### Display & UI
 - ✅ LVGL graphics engine (1280×720 landscape display with GT911 capacitive touch)
-- ✅ Three tabbed dashboards: Performance, Convenience, Infotainment
+- ✅ Four tabbed dashboards: Performance, Comfort, Infotainment, Diagnostic
 - ✅ Dynamic gauge scaling per platform (RPM, boost, temperature limits)
 - ✅ Color-coded status indicators (cool blue, normal green/brand color, alert red)
 - ✅ Interactive peak boost reset button
 - ✅ Brand-specific accent colors per interpreter
+- ✅ Grouped user-facing status summaries with safe `UNAVAILABLE` fallbacks
 
 ### Network & Remote Access
 - ✅ WiFi Access Point hotspot (AP mode)
@@ -336,7 +340,7 @@ Each platform has a **unified parsing core** that handles standard signal extrac
 ```cpp
 // parseStandardMqbFrame() - Shared by all MQB interpreters
 case 0x0FC:    // Engine RPM
-case 0x1A2:    // Oil & Coolant Temps  
+case 0x1A2:    // Oil & Coolant Temps
 case 0x28A:    // Turbo Boost Pressure
 ```
 Used by: Audi S3 8V, VW Golf 7/8, Skoda Octavia MK3/4, etc.
@@ -394,7 +398,7 @@ Byte Extraction & Scaling
         │
         ▼
 Update sys_ctx->metrics struct
-(RPM, boost, temps, door, MMI code, etc.)
+(RPM, boost, gear, odometer, doors, lights, media state, diagnostics, etc.)
         │
         ▼
 updateUIElements() reads fresh metrics
@@ -420,7 +424,13 @@ Turbo Boost             0x28A       0–1      10 mbar   −1013 mbar  bar
 Driver Door             0x61C       0 (bit0) 1.0       —           bool
 Climate Target          0x527       0        0.5       0           °C
 MMI Key Code            0x695       0        1.0       0           hex
+Gear / Drive Mode*      0x540       0–1      mixed     —           label
+Odometer*               0x5A0       0–3      0.1       0           km
+Comfort Lighting*       0x470       0 bits   1.0       —           status
+Media Source*           0x6C1       0–2      1.0       0           label
 ```
+
+*Shared representative mappings are intentionally centralized through config structs so additional vehicles can override the defaults without changing the UI or web schema.*
 
 **Interpreters:** AudiS38VInterpreter, AudiRS3GYInterpreter, VwGolf7/8Interpreter, SkodaOctaviaMk3/4Interpreter, etc.
 
@@ -482,7 +492,7 @@ Turbo Boost             0x28A       0–1      10 mbar   −1013 mbar  bar
 - **Refresh Rate:** Continuous (LVGL timer every ~33 ms @ 30 FPS)
 - **Color Scheme:** Platform-specific accent colors + status indicators
 
-### UI Layout – Three Tabs
+### UI Layout – Four Tabs
 
 #### Tab 1: Performance Dashboard
 ```
@@ -519,7 +529,7 @@ Turbo Boost             0x28A       0–1      10 mbar   −1013 mbar  bar
 └────────────────────────────────────────────────────────────┘
 ```
 
-**Signals:** Driver door status, climate control target
+**Signals:** Door states, indicators, lighting, handbrake, climate target, exterior temperature
 
 #### Tab 3: Infotainment Dashboard
 ```
@@ -530,7 +540,10 @@ Turbo Boost             0x28A       0–1      10 mbar   −1013 mbar  bar
 └────────────────────────────────────────────────────────────┘
 ```
 
-**Signals:** Steering wheel control codes
+**Signals:** Steering wheel control codes, media source, track/preset, phone activity
+
+#### Tab 4: Diagnostic Dashboard
+**Signals:** VIN-derived identity, MIL status, stored DTC count, module voltage, last diagnostic response
 
 ### Color Coding Scheme
 
@@ -592,11 +605,12 @@ http://192.168.4.1
 
 ### Features
 
-- **Live Metrics Display:** RPM, boost, temperatures, door status, MMI key codes
+- **Live Metrics Display:** RPM, boost, temperatures, gear, drive mode, odometer, lighting, indicators, MMI/media state
 - **Peak Boost Tracking:** Displayed value with reset button
 - **Status-Based Coloring:** Same color scheme as local display
 - **Auto-Reconnect:** 2-second retry loop if WebSocket drops
 - **Responsive Design:** Works on mobile and desktop browsers
+- **Expanded diagnostics panel:** MIL, DTC count, module voltage, and last ECU response summary
 
 ### WebSocket Protocol
 
@@ -620,6 +634,17 @@ http://192.168.4.1
   "peak": 1.45,
   "oil": 92,
   "h2o": 88,
+  "gear_label": "D4",
+  "mode_name": "SPORT",
+  "odo": 182345.6,
+  "li_ok": true,
+  "li": false,
+  "low_ok": true,
+  "low": true,
+  "src_name": "MEDIA",
+  "mil_ok": true,
+  "dtc": 0,
+  "volt": 13.8,
   "car": "Audi A3 / S3 / RS3 (MQB Matrix)"
 }
 ```
@@ -631,6 +656,14 @@ http://192.168.4.1
 ### Step 1: Analyze Target Vehicle CAN Bus
 
 Use a CAN analyzer (CANoe, PCAN-View, etc.) to identify signal frame IDs and byte offsets.
+
+The shared decoder helpers now accept declarative mapping tables:
+
+- `BoolSignalMapping` for bit-backed status values (indicators, lights, phone state)
+- `ByteSignalMapping` for byte-backed values (media source, track/preset)
+- `OdometerSignalMapping` for packed odometer counters
+- `applyGenericGearFrame()` for selector + displayed gear translation
+- `parsePassiveDiagnosticsFrame()` for standard OBD/UDS reply decoding
 
 ### Step 2: Create a New Interpreter Class
 
@@ -647,10 +680,10 @@ public:
 };
 
 // In Platform_MQB_Matrix.cpp (example for MQB platform)
-void YourNewVehicleInterpreter::interpretDriveTrain(twai_message_t &msg) { 
+void YourNewVehicleInterpreter::interpretDriveTrain(twai_message_t &msg) {
     parseStandardMqbFrame(msg);
 }
-void YourNewVehicleInterpreter::interpretComfort(twai_message_t &msg) { 
+void YourNewVehicleInterpreter::interpretComfort(twai_message_t &msg) {
     parseStandardMqbComfort(msg);
 }
 void YourNewVehicleInterpreter::interpretInfotainment(twai_message_t &msg) {
@@ -658,9 +691,9 @@ void YourNewVehicleInterpreter::interpretInfotainment(twai_message_t &msg) {
 }
 void YourNewVehicleInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0);
-    if (sys_ctx->rpm_meter != nullptr) 
+    if (sys_ctx->rpm_meter != nullptr)
         lv_arc_set_range(sys_ctx->rpm_meter, 0, 8000);
-    if (sys_ctx->boost_meter != nullptr) 
+    if (sys_ctx->boost_meter != nullptr)
         lv_bar_set_range(sys_ctx->boost_meter, 0, 250);
 }
 ```
@@ -671,13 +704,13 @@ Edit the VIN detection function in `Audi_S3_8V.ino`:
 
 ```cpp
 // Add to chassis detection
-else if (strcmp(chassis, "YOUR_CODE") == 0) { 
+else if (strcmp(chassis, "YOUR_CODE") == 0) {
     active_vehicle_profile.model_name = "Your Vehicle Name";
     active_vehicle_profile.network_generation = SERIES_MQB_A_CLASS;
 }
 
 // Add to interpreter loading
-else if (strcmp(chassis, "YOUR_CODE") == 0) 
+else if (strcmp(chassis, "YOUR_CODE") == 0)
     sys_ctx->interpreter = new YourNewVehicleInterpreter();
 ```
 
@@ -815,7 +848,7 @@ twai_timing_config_t t_cfg = TWAI_TIMING_CONFIG_500KBITS();
 
 ---
 
-**Last Updated:** July 22, 2026  
-**Status:** Active Development  
-**Supported Vehicles:** 38 Models across 4 Platforms  
+**Last Updated:** July 22, 2026
+**Status:** Active Development
+**Supported Vehicles:** 38 Models across 4 Platforms
 **Lines of Code:** ~5,500 total

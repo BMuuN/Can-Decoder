@@ -1,5 +1,25 @@
 #include "VehicleInterpreters.h"
 
+static constexpr BoolSignalMapping kMqbComfortSignalMappings[] = {
+    {0x470, 0, 0x01, &LiveTelemetryMetrics::left_indicator_active,  &LiveTelemetryMetrics::left_indicator_known},
+    {0x470, 0, 0x02, &LiveTelemetryMetrics::right_indicator_active, &LiveTelemetryMetrics::right_indicator_known},
+    {0x470, 0, 0x04, &LiveTelemetryMetrics::parking_lights_active,  &LiveTelemetryMetrics::parking_lights_known},
+    {0x470, 0, 0x08, &LiveTelemetryMetrics::low_beam_active,        &LiveTelemetryMetrics::low_beam_known},
+    {0x470, 0, 0x10, &LiveTelemetryMetrics::high_beam_active,       &LiveTelemetryMetrics::high_beam_known},
+    {0x470, 0, 0x20, &LiveTelemetryMetrics::interior_lights_active, &LiveTelemetryMetrics::interior_lights_known},
+};
+
+static constexpr ByteSignalMapping kMqbInfotainmentMappings[] = {
+    {0x6C1, 0, 0xFF, 0, &LiveTelemetryMetrics::infotainment_source_code, &LiveTelemetryMetrics::infotainment_source_known},
+    {0x6C1, 1, 0xFF, 0, &LiveTelemetryMetrics::infotainment_track,       &LiveTelemetryMetrics::infotainment_track_known},
+};
+
+static constexpr BoolSignalMapping kMqbInfotainmentStateMappings[] = {
+    {0x6C1, 2, 0x01, &LiveTelemetryMetrics::phone_call_active, &LiveTelemetryMetrics::phone_call_known},
+};
+
+static constexpr OdometerSignalMapping kMqbOdometerMapping = {0x5A0, 0, 4, 0.1f, true};
+
 // =========================================================================
 //  UNIFIED MQB DECODING CORE (USED BY ALL MQB ENGINE CLASSES)
 // =========================================================================
@@ -14,7 +34,7 @@ static void parseStandardMqbFrame(twai_message_t &msg) {
             if (msg.data_length_code < 2) break;
             uint16_t low_byte  = (uint16_t)(*(msg.data + 0));
             uint16_t high_byte = (uint16_t)(*(msg.data + 1));
-            sys_ctx->metrics.engine_rpm = ((high_byte << 8) | low_byte) * 0.25; 
+            sys_ctx->metrics.engine_rpm = ((high_byte << 8) | low_byte) * 0.25;
             break;
         }
         case 0x1A2: { // MQB Drivetrain Thermal Indicators
@@ -54,6 +74,10 @@ static void parseStandardMqbFrame(twai_message_t &msg) {
             break;
         }
     }
+
+    applyGenericGearFrame(msg, 0x540, 0, 1, 0x01);
+    applyOdometerSignalMapping(msg, kMqbOdometerMapping);
+    parsePassiveDiagnosticsFrame(msg);
 }
 
 static void parseStandardMqbComfort(twai_message_t &msg) {
@@ -75,6 +99,13 @@ static void parseStandardMqbComfort(twai_message_t &msg) {
         if (msg.data_length_code < 1) return;
         sys_ctx->metrics.handbrake_active = (*(msg.data + 0) & 0x10) != 0;
     }
+
+    applyBoolSignalMappings(msg, kMqbComfortSignalMappings, sizeof(kMqbComfortSignalMappings) / sizeof(kMqbComfortSignalMappings[0]));
+}
+
+static void parseStandardMqbInfotainment(twai_message_t &msg) {
+    applyByteSignalMappings(msg, kMqbInfotainmentMappings, sizeof(kMqbInfotainmentMappings) / sizeof(kMqbInfotainmentMappings[0]));
+    applyBoolSignalMappings(msg, kMqbInfotainmentStateMappings, sizeof(kMqbInfotainmentStateMappings) / sizeof(kMqbInfotainmentStateMappings[0]));
 }
 
 // =========================================================================
@@ -87,6 +118,7 @@ void AudiS38VInterpreter::interpretComfort(twai_message_t &msg)    { parseStanda
 void AudiS38VInterpreter::interpretInfotainment(twai_message_t &msg) {
     if (msg.identifier == 0x695 && msg.data_length_code >= 1)
         sys_ctx->metrics.mmi_key_code = *(msg.data + 0);
+    parseStandardMqbInfotainment(msg);
 }
 void AudiS38VInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Performance Red
@@ -100,6 +132,7 @@ void AudiRS3GYInterpreter::interpretComfort(twai_message_t &msg)    { parseStand
 void AudiRS3GYInterpreter::interpretInfotainment(twai_message_t &msg) {
     if (msg.identifier == 0x695 && msg.data_length_code >= 1)
         sys_ctx->metrics.mmi_key_code = *(msg.data + 0);
+    parseStandardMqbInfotainment(msg);
 }
 void AudiRS3GYInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(200, 0, 0); // RS Crimson Red
@@ -110,7 +143,7 @@ void AudiRS3GYInterpreter::configureUiLimits() {
 // --- 3. VW GOLF MK7 / GTI / R ---
 void VwGolf7Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void VwGolf7Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void VwGolf7Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwGolf7Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void VwGolf7Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(0, 100, 220); // VW Racing Signature Blue
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -120,7 +153,7 @@ void VwGolf7Interpreter::configureUiLimits() {
 // --- 4. VW GOLF MK8 / GTI / R ---
 void VwGolf8Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void VwGolf8Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void VwGolf8Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwGolf8Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void VwGolf8Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(0, 240, 255); // Golf 8 Neon Cyan Digital Theme
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -130,7 +163,7 @@ void VwGolf8Interpreter::configureUiLimits() {
 // --- 5. VW PASSAT B8 ---
 void VwPassatB8Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void VwPassatB8Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void VwPassatB8Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwPassatB8Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void VwPassatB8Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(255, 255, 255); // Clean Passat White Backlighting
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6000); // Diesel/TDI Balance
@@ -140,7 +173,7 @@ void VwPassatB8Interpreter::configureUiLimits() {
 // --- 6. VW PASSAT B9 ---
 void VwPassatB9Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void VwPassatB9Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void VwPassatB9Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwPassatB9Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void VwPassatB9Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(200, 220, 255); // Soft Executive Ambient Blue
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6000);
@@ -150,7 +183,7 @@ void VwPassatB9Interpreter::configureUiLimits() {
 // --- 7. VW TIGUAN MK2 ---
 void VwTiguanMk2Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void VwTiguanMk2Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void VwTiguanMk2Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwTiguanMk2Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void VwTiguanMk2Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(255, 255, 255); // Crisp Instrument White
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -160,7 +193,7 @@ void VwTiguanMk2Interpreter::configureUiLimits() {
 // --- 8. VW TIGUAN MK3 ---
 void VwTiguanMk3Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void VwTiguanMk3Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void VwTiguanMk3Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwTiguanMk3Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void VwTiguanMk3Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(100, 255, 100); // Eco Active Green Ambient
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -170,7 +203,7 @@ void VwTiguanMk3Interpreter::configureUiLimits() {
 // --- 9. VW ARTEON ---
 void VwArteonInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void VwArteonInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void VwArteonInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void VwArteonInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void VwArteonInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(230, 230, 250); // Premium Soft Amber
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -180,7 +213,7 @@ void VwArteonInterpreter::configureUiLimits() {
 // --- 10. SEAT LEON MK3 ---
 void SeatLeonMk3Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void SeatLeonMk3Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void SeatLeonMk3Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void SeatLeonMk3Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void SeatLeonMk3Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(240, 20, 0); // Vibrant Spanish Red Theme
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7500);
@@ -190,7 +223,7 @@ void SeatLeonMk3Interpreter::configureUiLimits() {
 // --- 11. CUPRA LEON / FORMENTOR ---
 void CupraLeonFormentorInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void CupraLeonFormentorInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void CupraLeonFormentorInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void CupraLeonFormentorInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void CupraLeonFormentorInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(212, 115, 45); // Cupra Premium Copper Theme
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 8000);
@@ -200,7 +233,7 @@ void CupraLeonFormentorInterpreter::configureUiLimits() {
 // --- 12. SKODA OCTAVIA MK3 ---
 void SkodaOctaviaMk3Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void SkodaOctaviaMk3Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void SkodaOctaviaMk3Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void SkodaOctaviaMk3Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void SkodaOctaviaMk3Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(0, 200, 0); // Skoda vRS Motorsport Green
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -210,7 +243,7 @@ void SkodaOctaviaMk3Interpreter::configureUiLimits() {
 // --- 13. SKODA OCTAVIA MK4 ---
 void SkodaOctaviaMk4Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void SkodaOctaviaMk4Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void SkodaOctaviaMk4Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void SkodaOctaviaMk4Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void SkodaOctaviaMk4Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(50, 220, 50); // Neon vRS Green Layout
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -220,7 +253,7 @@ void SkodaOctaviaMk4Interpreter::configureUiLimits() {
 // --- 14. SKODA SUPERB (MQB) ---
 void SkodaSuperbMQBInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void SkodaSuperbMQBInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void SkodaSuperbMQBInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void SkodaSuperbMQBInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void SkodaSuperbMQBInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(220, 220, 200); // Superb Warm Executive White
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -230,7 +263,7 @@ void SkodaSuperbMQBInterpreter::configureUiLimits() {
 // --- 15. AUDI Q3 (MQB) ---
 void AudiQ3MQBInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void AudiQ3MQBInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void AudiQ3MQBInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiQ3MQBInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void AudiQ3MQBInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -240,7 +273,7 @@ void AudiQ3MQBInterpreter::configureUiLimits() {
 // --- 16. AUDI TT MK3 ---
 void AudiTTMk3Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void AudiTTMk3Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void AudiTTMk3Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiTTMk3Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void AudiTTMk3Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Cockpit Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 8000);
@@ -250,7 +283,7 @@ void AudiTTMk3Interpreter::configureUiLimits() {
 // --- 17. AUDI Q2 ---
 void AudiQ2Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMqbFrame(msg); }
 void AudiQ2Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMqbComfort(msg); }
-void AudiQ2Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiQ2Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMqbInfotainment(msg); }
 void AudiQ2Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Standard Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);

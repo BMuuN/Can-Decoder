@@ -22,10 +22,20 @@ static inline float decode_temperature_offset(uint8_t raw) {
 // --- ADVANCED VEHICLE DECODING ENUMS ---
 enum MqbPlatformSeries {
     SERIES_UNKNOWN,
-    SERIES_MQB_A_CLASS,    
-    SERIES_MLB_LONG_CLASS, 
-    SERIES_PQ35_46_LEGACY, 
-    SERIES_SMALL_PO_SKODA  
+    SERIES_MQB_A_CLASS,
+    SERIES_MLB_LONG_CLASS,
+    SERIES_PQ35_46_LEGACY,
+    SERIES_SMALL_PO_SKODA
+};
+
+enum GearSelectorPosition : uint8_t {
+    GEAR_SELECTOR_UNKNOWN = 0,
+    GEAR_SELECTOR_PARK,
+    GEAR_SELECTOR_REVERSE,
+    GEAR_SELECTOR_NEUTRAL,
+    GEAR_SELECTOR_DRIVE,
+    GEAR_SELECTOR_SPORT,
+    GEAR_SELECTOR_MANUAL
 };
 
 // --- GLOBAL TELEMETRY STRUCT LAYOUT TEMPLATES ---
@@ -46,7 +56,78 @@ struct LiveTelemetryMetrics {
     bool rear_left_door_open = false;
     bool rear_right_door_open = false;
     bool handbrake_active = false;
+    bool left_indicator_active = false;
+    bool left_indicator_known = false;
+    bool right_indicator_active = false;
+    bool right_indicator_known = false;
+    bool parking_lights_active = false;
+    bool parking_lights_known = false;
+    bool low_beam_active = false;
+    bool low_beam_known = false;
+    bool high_beam_active = false;
+    bool high_beam_known = false;
+    bool interior_lights_active = false;
+    bool interior_lights_known = false;
+    bool sport_mode_active = false;
+    bool sport_mode_known = false;
+    GearSelectorPosition gear_position = GEAR_SELECTOR_UNKNOWN;
+    bool gear_position_known = false;
+    uint8_t selected_gear = 0;
+    bool selected_gear_known = false;
+    float odometer_km = 0.0f;
+    bool odometer_valid = false;
+    uint8_t infotainment_source_code = 0;
+    bool infotainment_source_known = false;
+    uint8_t infotainment_track = 0;
+    bool infotainment_track_known = false;
+    bool phone_call_active = false;
+    bool phone_call_known = false;
+    bool diagnostics_seen = false;
+    bool mil_active = false;
+    bool mil_status_known = false;
+    uint8_t stored_dtc_count = 0;
+    float control_module_voltage = 0.0f;
+    bool control_module_voltage_known = false;
+    uint8_t last_diag_service = 0x00;
+    uint8_t last_diag_pid = 0x00;
+    uint16_t last_diag_source = 0x000;
+    uint32_t diag_response_counter = 0;
 };
+
+struct BoolSignalMapping {
+    uint32_t frame_id;
+    uint8_t byte_index;
+    uint8_t bit_mask;
+    bool LiveTelemetryMetrics::*value_field;
+    bool LiveTelemetryMetrics::*known_field;
+};
+
+struct ByteSignalMapping {
+    uint32_t frame_id;
+    uint8_t byte_index;
+    uint8_t bit_mask;
+    uint8_t bit_shift;
+    uint8_t LiveTelemetryMetrics::*value_field;
+    bool LiveTelemetryMetrics::*known_field;
+};
+
+struct OdometerSignalMapping {
+    uint32_t frame_id;
+    uint8_t start_byte;
+    uint8_t byte_count;
+    float scale;
+    bool big_endian;
+};
+
+bool applyBoolSignalMappings(twai_message_t &msg, const BoolSignalMapping* mappings, size_t count);
+bool applyByteSignalMappings(twai_message_t &msg, const ByteSignalMapping* mappings, size_t count);
+bool applyOdometerSignalMapping(twai_message_t &msg, const OdometerSignalMapping& mapping);
+void applyGenericGearFrame(twai_message_t &msg, uint32_t frame_id, uint8_t gear_byte_index, uint8_t sport_byte_index, uint8_t sport_mask);
+void parsePassiveDiagnosticsFrame(twai_message_t &msg);
+const char* gearSelectorPositionLabel(GearSelectorPosition position);
+const char* infotainmentSourceLabel(uint8_t code);
+const char* availabilityLabel(bool known, bool active, const char* active_label, const char* inactive_label, const char* unknown_label = "UNAVAILABLE");
+const char* openClosedLabel(bool open);
 
 struct DecodedVehicleMetrics {
     const char* brand = "VAG MOTOR CORP";
@@ -73,21 +154,21 @@ struct GlobalFrameworkContext {
     LiveTelemetryMetrics metrics;
     DecodedVehicleMetrics profile;
     BaseVehicleInterpreter* interpreter = nullptr;
-    
+
     // UI Layout tracking pointer references
     lv_obj_t* tv = nullptr;
     lv_obj_t* rpm_meter = nullptr;
     lv_obj_t* boost_meter = nullptr;
     lv_obj_t* oil_arc = nullptr;
     lv_obj_t* coolant_arc = nullptr;
-    
+
     lv_color_t normal_green;
 };
 
 // --- GLOBAL EXTERN LINKS SHARED ACROSS ALL WORKSPACES ---
 extern GlobalFrameworkContext* sys_ctx;
 extern DecodedVehicleMetrics active_vehicle_profile;
-extern twai_handle_t twai_ports[]; 
+extern twai_handle_t twai_ports[];
 
 extern lv_obj_t *rpm_meter;
 extern lv_obj_t *boost_meter;
