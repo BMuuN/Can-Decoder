@@ -63,7 +63,7 @@ static constexpr uint32_t SERIAL_BAUD_RATE = 921600; // USB CDC virtual port; 92
 // SECURITY: Change AP_PASSWORD_DEFAULT above before deploying to a real vehicle.
 
 // --- THREAD-SAFE FIXED CHAR BUFFER ARRAY ---
-static char global_ws_buffer[2048]; // Extended to accommodate grouped telemetry expansions
+static char global_ws_buffer[2048]; // Expanded from 512 to 2048 bytes to accommodate grouped telemetry expansions
 // std::atomic<bool> with acquire/release semantics provides the memory-ordering
 // fence needed on RISC-V (ESP32-P4) so the buffer writes are visible to Core 0
 // before it observes the flag as true.  Plain 'volatile' does NOT provide this.
@@ -557,7 +557,8 @@ static void queuePassiveDiagnosticPoll() {
     tx_msg.data_length_code = 8;
     tx_msg.data[0] = 0x02;
     tx_msg.data[1] = 0x01;
-    tx_msg.data[2] = poll_monitor_status ? 0x01 : 0x42;
+    tx_msg.data[2] = poll_monitor_status ? 0x01 /* PID 0x01: monitor status since DTC clear */
+                                      : 0x42 /* PID 0x42: control module voltage */;
     for (int i = 3; i < 8; i++) tx_msg.data[i] = 0x00;
 
     if (twai_transmit_v2(twai_ports[0], &tx_msg, 0) == ESP_OK) {
@@ -935,21 +936,29 @@ function update(d) {
 
     var indEl = document.getElementById('ind');
     var indicatorsKnown = d.li_ok || d.ri_ok;
-    indEl.textContent = !indicatorsKnown ? 'UNAVAILABLE'
-        : (d.li && d.ri) ? 'HAZARDS'
-        : d.li ? 'LEFT ACTIVE'
-        : d.ri ? 'RIGHT ACTIVE'
-        : 'OFF';
-    indEl.className = 'val ' + (!indicatorsKnown ? 'blue' : (d.li || d.ri) ? 'amber blink' : 'green');
+    if (!indicatorsKnown) indEl.textContent = 'UNAVAILABLE';
+    else if (d.li && d.ri) indEl.textContent = 'HAZARDS';
+    else if (d.li) indEl.textContent = 'LEFT ACTIVE';
+    else if (d.ri) indEl.textContent = 'RIGHT ACTIVE';
+    else indEl.textContent = 'OFF';
+    var indicatorClass = 'blue';
+    if (indicatorsKnown) indicatorClass = (d.li || d.ri) ? 'amber blink' : 'green';
+    indEl.className = 'val ' + indicatorClass;
 
     var lightsEl = document.getElementById('lights');
     var lightsKnown = d.park_ok || d.low_ok || d.high_ok;
-    lightsEl.textContent = !lightsKnown ? 'UNAVAILABLE'
-        : d.high ? 'HIGH BEAM'
-        : d.low ? 'LOW BEAM'
-        : d.park ? 'PARKING'
-        : 'OFF';
-    lightsEl.className = 'val ' + (!lightsKnown ? 'blue' : d.high ? 'amber' : d.low ? 'green' : 'white');
+    if (!lightsKnown) lightsEl.textContent = 'UNAVAILABLE';
+    else if (d.high) lightsEl.textContent = 'HIGH BEAM';
+    else if (d.low) lightsEl.textContent = 'LOW BEAM';
+    else if (d.park) lightsEl.textContent = 'PARKING';
+    else lightsEl.textContent = 'OFF';
+    var lightsClass = 'blue';
+    if (lightsKnown) {
+        if (d.high) lightsClass = 'amber';
+        else if (d.low) lightsClass = 'green';
+        else lightsClass = 'white';
+    }
+    lightsEl.className = 'val ' + lightsClass;
 
     var cabinEl = document.getElementById('cabin');
     cabinEl.textContent = statusLabel(d.int, d.int_ok, 'ON', 'OFF');
@@ -1227,7 +1236,9 @@ void CockpitCoreProcessor(void *pvParameters) {
         const size_t payload_bytes = measureJson(doc) + 1; // include null terminator
         if (payload_bytes > sizeof(global_ws_buffer)) {
           snprintf(global_ws_buffer, sizeof(global_ws_buffer),
-            "{\"ok\":false,\"msg\":\"Telemetry payload exceeded websocket buffer\"}");
+            "{\"ok\":false,\"msg\":\"Telemetry payload (%u bytes) exceeded buffer capacity (%u bytes)\"}",
+            (unsigned)payload_bytes,
+            (unsigned)sizeof(global_ws_buffer));
         } else {
           serializeJson(doc, global_ws_buffer, sizeof(global_ws_buffer));
         }

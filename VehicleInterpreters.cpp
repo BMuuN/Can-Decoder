@@ -56,7 +56,7 @@ bool applyOdometerSignalMapping(twai_message_t &msg, const OdometerSignalMapping
     return true;
 }
 
-static void applyGearSelectorFromRaw(uint8_t raw) {
+static void decodeGearSelectorFromRaw(uint8_t raw) {
     if (sys_ctx == nullptr) return;
 
     sys_ctx->metrics.gear_position_known = true;
@@ -84,7 +84,7 @@ void applyGenericGearFrame(twai_message_t &msg, uint32_t frame_id, uint8_t gear_
     const uint8_t raw_selector = msg.data[gear_byte_index] & 0x0F;
     const uint8_t displayed_gear = (msg.data[gear_byte_index] >> 4) & 0x0F;
 
-    applyGearSelectorFromRaw(raw_selector);
+    decodeGearSelectorFromRaw(raw_selector);
 
     if (displayed_gear > 0) {
         sys_ctx->metrics.selected_gear = displayed_gear;

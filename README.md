@@ -430,7 +430,7 @@ Comfort Lighting*       0x470       0 bits   1.0       —           status
 Media Source*           0x6C1       0–2      1.0       0           label
 ```
 
-\* Shared representative mappings are intentionally centralized through config structs so additional vehicles can override the defaults without changing the UI or web schema.
+*Shared representative mappings are intentionally centralized through config structs so additional vehicles can override the defaults without changing the UI or web schema.*
 
 **Interpreters:** AudiS38VInterpreter, AudiRS3GYInterpreter, VwGolf7/8Interpreter, SkodaOctaviaMk3/4Interpreter, etc.
 
