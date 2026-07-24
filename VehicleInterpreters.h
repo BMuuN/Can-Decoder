@@ -25,8 +25,61 @@ enum MqbPlatformSeries {
     SERIES_MQB_A_CLASS,
     SERIES_MLB_LONG_CLASS,
     SERIES_PQ35_46_LEGACY,
-    SERIES_SMALL_PO_SKODA
+    SERIES_SMALL_PO_SKODA,
+    SERIES_PQ24_PL45,      // Early generation: Golf Mk4, Bora, Polo 9N, A3 8L, A4 B5/B6
+    SERIES_MQB_EVO_MEB     // Electric/MEB era:  ID.3, ID.4, ID.Buzz, Q4 e-tron, Enyaq
 };
+
+// --- PLATFORM CAPABILITY FLAGS ---
+// Centralised definition of what each generation can expose on the CAN bus.
+// UI surfaces, payload builders, and simulators consult these flags so that
+// features that do not exist for a platform are never shown or generated.
+struct PlatformCapabilities {
+    // Powertrain / ICE
+    bool has_boost          = false; // Turbo boost pressure (bar)
+    bool has_oil_temp       = false; // Engine oil temperature
+    bool has_gear_position  = false; // Gearbox/selector position
+    bool has_drive_mode     = false; // Eco / Normal / Sport mode selection
+    bool has_odometer       = false; // Odometer reading
+    // Comfort / body
+    bool has_indicators     = false; // Turn indicator status
+    bool has_exterior_lights= false; // Headlight / parking-light status
+    bool has_interior_lights= false; // Cabin lighting on/off
+    bool has_exterior_temp  = true;  // Ambient temperature (all gens ≥ PQ24)
+    bool has_rear_doors     = false; // Rear door open/close signals
+    // Infotainment
+    bool has_media_source   = false; // Source / track playback state
+    bool has_phone          = false; // Bluetooth / phone-call status
+    bool has_mmi            = false; // MMI rotary key input
+    // ADAS / advanced
+    bool has_acc_radar      = false; // Adaptive cruise / radar target vectors
+    bool has_ambient_rgb    = false; // Interior RGB ambient lighting value
+    // EV / MEB specific
+    bool has_ev_battery     = false; // HV SoC %, cell voltage, pack voltage
+    bool has_ev_charging    = false; // Charging power / status
+    bool has_ev_regen       = false; // Regenerative braking torque
+    bool has_motor_temp     = false; // Electric motor temperature
+    bool has_ota_status     = false; // OTA firmware update status
+};
+
+// Returns a fully-populated capability profile for the given platform generation.
+PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen);
+
+// --- MODULE SCAN CATALOG ---
+// Represents one addressable module that is expected on a given platform's buses.
+struct ModuleScanEntry {
+    uint8_t     address;     // Standard VAG diagnostic address (decimal, e.g. 01 = ECM)
+    const char* short_name;  // E.g. "ECM", "ABS"
+    const char* full_name;   // Human-readable English: "Engine Control Module"
+    const char* capabilities;// Brief English interpretation of detectable signals
+};
+
+// Returns the module scan table for the given platform (null-terminated array).
+// Useful for UI documentation, serial diagnostics, and docs generation.
+const ModuleScanEntry* getPlatformModuleCatalog(MqbPlatformSeries gen, size_t* out_count);
+
+// Returns a multi-line English interpretation summary string for the platform.
+const char* getPlatformEnglishSummary(MqbPlatformSeries gen);
 
 enum GearSelectorPosition : uint8_t {
     GEAR_SELECTOR_UNKNOWN = 0,
@@ -92,6 +145,23 @@ struct LiveTelemetryMetrics {
     uint8_t last_diag_pid = 0x00;
     uint16_t last_diag_source = 0x000;
     uint32_t diag_response_counter = 0;
+
+    // --- EV / MEB SPECIFIC FIELDS (zero/false = unavailable on ICE platforms) ---
+    float   ev_soc_pct              = 0.0f;  // High-voltage battery state of charge (%)
+    bool    ev_soc_known            = false;
+    float   ev_hv_voltage           = 0.0f;  // HV pack voltage (V)
+    bool    ev_hv_voltage_known     = false;
+    float   ev_charging_kw          = 0.0f;  // Active charging power (kW)
+    bool    ev_charging_known       = false;
+    bool    ev_charging_active      = false;
+    float   ev_regen_torque         = 0.0f;  // Recuperation / regen torque (Nm)
+    bool    ev_regen_known          = false;
+    float   ev_motor_temp           = 0.0f;  // Electric motor temperature (°C)
+    bool    ev_motor_temp_known     = false;
+    float   ev_cell_voltage_delta   = 0.0f;  // Max cell imbalance (mV)
+    bool    ev_cell_delta_known     = false;
+    bool    ev_ota_update_active    = false;  // OTA firmware update in progress
+    bool    ev_ota_status_known     = false;
 };
 
 struct BoolSignalMapping {
@@ -135,6 +205,7 @@ struct DecodedVehicleMetrics {
     const char* electrical_bus = "STANDARD INFRASTRUCTURE CAN";
     int production_year = 0;
     MqbPlatformSeries network_generation = SERIES_UNKNOWN;
+    PlatformCapabilities caps;           // Feature availability flags for UI gating
 };
 
 // --- ABSTRACT MULTI-VEHICLE PARSER INTERFACE BLUEPRINT ---
@@ -393,6 +464,62 @@ public:
     void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
 };
 class SeatIbizaMQBA0Interpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+
+// =========================================================================
+//  FORWARD DECLARATIONS: GROUP 5 - PQ24/PQ34/PL45 EARLY GENERATION (Platform_PQ24_Early.cpp)
+// =========================================================================
+class AudiA38LInterpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class AudiA4B6Interpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class VwGolf4Interpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class VwPolo9NInterpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class VwBoraInterpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+
+// =========================================================================
+//  FORWARD DECLARATIONS: GROUP 6 - MEB ELECTRIC ERA (Platform_MEB_Electric.cpp)
+// =========================================================================
+class VwId3Interpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class VwId4Interpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class VwId5Interpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class VwIdBuzzInterpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class AudiQ4EtronInterpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class SkodaEnyaqInterpreter : public BaseVehicleInterpreter {
+public:
+    void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
+};
+class CupraBorhInterpreter : public BaseVehicleInterpreter {
 public:
     void interpretDriveTrain(twai_message_t &msg) override; void interpretComfort(twai_message_t &msg) override; void interpretInfotainment(twai_message_t &msg) override; void configureUiLimits() override;
 };

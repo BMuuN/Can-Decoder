@@ -9,6 +9,10 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
     static uint32_t bench_tick = 0;
     bench_tick++;
 
+    const MqbPlatformSeries gen = active_vehicle_profile.network_generation;
+    const bool is_meb      = (gen == SERIES_MQB_EVO_MEB);
+    const bool is_pq24     = (gen == SERIES_PQ24_PL45);
+
     const uint32_t lighting_phase = (bench_tick / 40) % 3;
     const bool left_indicator = lighting_phase == 0;
     const bool right_indicator = lighting_phase == 1;
@@ -22,12 +26,21 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
     const float odometer_km = 182345.6f + ((bench_tick % 50000000UL) * 0.02f); // Wrap after long bench sessions to avoid unbounded counter growth.
     const uint8_t infotainment_track = 7 + (bench_tick / 120) % 6;
 
+    // MEB-specific bench values: simulate a battery discharging from 80% to 20% over a drive cycle.
+    const float ev_soc_pct      = is_meb ? (80.0f - (target_rpm / 5500.0f) * 60.0f) : 0.0f;
+    const float ev_hv_voltage   = is_meb ? (350.0f + ev_soc_pct * 0.5f)             : 0.0f; // 350-390 V range
+    const float ev_charging_kw  = is_meb && target_rpm < 900.0f ? 11.0f : 0.0f;            // Bench: charging at low "RPM"
+    const bool  ev_charging_act = is_meb && ev_charging_kw > 0.0f;
+    const float ev_regen_torque = is_meb ? -(throttle_pct > 5.0f ? 0.0f : 80.0f)   : 0.0f; // Regen when not accelerating
+    const float ev_motor_temp   = is_meb ? (40.0f + (target_rpm / 5500.0f) * 50.0f): 0.0f; // 40-90°C range
+
     // C-4: Protect the metrics write with the spinlock so Core 1's
     //      updateUIElements/parsers never observe a partially-written struct.
     portENTER_CRITICAL(&g_metrics_mux);
     sys_ctx->metrics.engine_rpm   = target_rpm;
-    sys_ctx->metrics.boost_bar    = target_boost;
-    sys_ctx->metrics.oil_temp     = target_oil;
+    // MEB: no turbo boost, no engine oil — clear those to avoid showing stale ICE values.
+    sys_ctx->metrics.boost_bar    = is_meb ? 0.0f : target_boost;
+    sys_ctx->metrics.oil_temp     = is_meb ? 0.0f : target_oil;
     sys_ctx->metrics.coolant_temp = target_h2o;
     // Derived bench values for new extended metrics
     sys_ctx->metrics.vehicle_speed  = vehicle_speed; // ~100 km/h at 5500 rpm
@@ -43,22 +56,27 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
     sys_ctx->metrics.low_beam_known = true;
     sys_ctx->metrics.high_beam_active = target_rpm > 4400.0f;
     sys_ctx->metrics.high_beam_known = true;
-    sys_ctx->metrics.interior_lights_active = cabin_light;
-    sys_ctx->metrics.interior_lights_known = true;
-    sys_ctx->metrics.sport_mode_active = sport_mode;
-    sys_ctx->metrics.sport_mode_known = true;
-    sys_ctx->metrics.gear_position = sport_mode ? GEAR_SELECTOR_SPORT : GEAR_SELECTOR_DRIVE;
-    sys_ctx->metrics.gear_position_known = true;
-    sys_ctx->metrics.selected_gear = displayed_gear;
-    sys_ctx->metrics.selected_gear_known = true;
-    sys_ctx->metrics.odometer_km = odometer_km;
-    sys_ctx->metrics.odometer_valid = true;
-    sys_ctx->metrics.infotainment_source_code = infotainment_source;
+    // Interior lights: MEB has cabin light capability; PQ24 does not broadcast it
+    sys_ctx->metrics.interior_lights_active = !is_pq24 && cabin_light;
+    sys_ctx->metrics.interior_lights_known  = !is_pq24;
+    // Gear/mode: PQ24 does not have gear-position CAN messages
+    sys_ctx->metrics.sport_mode_active = !is_pq24 && sport_mode;
+    sys_ctx->metrics.sport_mode_known  = !is_pq24;
+    sys_ctx->metrics.gear_position = !is_pq24 ? (sport_mode ? GEAR_SELECTOR_SPORT : GEAR_SELECTOR_DRIVE)
+                                               : GEAR_SELECTOR_UNKNOWN;
+    sys_ctx->metrics.gear_position_known = !is_pq24;
+    sys_ctx->metrics.selected_gear = !is_pq24 ? displayed_gear : 0;
+    sys_ctx->metrics.selected_gear_known = !is_pq24;
+    // Odometer: PQ24 doesn't broadcast odometer on CAN
+    sys_ctx->metrics.odometer_km    = !is_pq24 ? odometer_km : 0.0f;
+    sys_ctx->metrics.odometer_valid = !is_pq24;
+    // Infotainment: PQ24 has no track metadata or phone
+    sys_ctx->metrics.infotainment_source_code  = infotainment_source;
     sys_ctx->metrics.infotainment_source_known = true;
-    sys_ctx->metrics.infotainment_track = infotainment_track;
-    sys_ctx->metrics.infotainment_track_known = true;
+    sys_ctx->metrics.infotainment_track        = !is_pq24 ? infotainment_track : 0;
+    sys_ctx->metrics.infotainment_track_known  = !is_pq24;
     sys_ctx->metrics.phone_call_active = false;
-    sys_ctx->metrics.phone_call_known = true;
+    sys_ctx->metrics.phone_call_known  = !is_pq24;
     sys_ctx->metrics.diagnostics_seen = true;
     sys_ctx->metrics.mil_active = false;
     sys_ctx->metrics.mil_status_known = true;
@@ -69,6 +87,22 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
     sys_ctx->metrics.last_diag_pid = 0x42;
     sys_ctx->metrics.last_diag_source = 0x7E8;
     sys_ctx->metrics.diag_response_counter = bench_tick / 25;
+    // MEB-specific EV fields
+    sys_ctx->metrics.ev_soc_pct           = ev_soc_pct;
+    sys_ctx->metrics.ev_soc_known         = is_meb;
+    sys_ctx->metrics.ev_hv_voltage        = ev_hv_voltage;
+    sys_ctx->metrics.ev_hv_voltage_known  = is_meb;
+    sys_ctx->metrics.ev_charging_kw       = ev_charging_kw;
+    sys_ctx->metrics.ev_charging_known    = is_meb;
+    sys_ctx->metrics.ev_charging_active   = ev_charging_act;
+    sys_ctx->metrics.ev_regen_torque      = ev_regen_torque;
+    sys_ctx->metrics.ev_regen_known       = is_meb;
+    sys_ctx->metrics.ev_motor_temp        = ev_motor_temp;
+    sys_ctx->metrics.ev_motor_temp_known  = is_meb;
+    sys_ctx->metrics.ev_cell_voltage_delta = is_meb ? 8.0f : 0.0f; // bench: 8 mV delta
+    sys_ctx->metrics.ev_cell_delta_known  = is_meb;
+    sys_ctx->metrics.ev_ota_update_active = false;
+    sys_ctx->metrics.ev_ota_status_known  = is_meb;
     portEXIT_CRITICAL(&g_metrics_mux);
 
     // 2. Safely process hardware frame simulation ONLY if a real vehicle network is locked!
@@ -82,7 +116,145 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
         tx_msg.rtr = 0;
         tx_msg.data_length_code = 8;
 
-        if (active_vehicle_profile.network_generation == SERIES_MQB_A_CLASS) {
+        if (active_vehicle_profile.network_generation == SERIES_MQB_EVO_MEB) {
+            // === MEB ELECTRIC BENCH FRAMES ===
+
+            // A. Motor speed (re-uses MQB 0x0FC frame ID)
+            tx_msg.identifier = 0x0FC;
+            uint16_t raw_motor = (uint16_t)(target_rpm / 0.25f);
+            *(tx_msg.data + 0) = (uint8_t)(raw_motor & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)((raw_motor >> 8) & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // B. Thermal management (motor loop temp, inverter temp) — MEB 0x1A2
+            tx_msg.identifier = 0x1A2;
+            *(tx_msg.data + 0) = (uint8_t)(target_h2o + 40);          // coolant loop
+            *(tx_msg.data + 1) = (uint8_t)(ev_motor_temp + 40.0f);    // motor temp
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // C. Vehicle speed — MEB 0x096 (same as MQB, 0.01 km/h/LSB)
+            tx_msg.identifier = 0x096;
+            uint16_t raw_spd_meb = (uint16_t)(vehicle_speed / 0.01f);
+            *(tx_msg.data + 0) = (uint8_t)(raw_spd_meb & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)((raw_spd_meb >> 8) & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // D. Accelerator pedal — MEB 0x084 (same as MQB, 0.4 %/LSB)
+            tx_msg.identifier = 0x084;
+            *(tx_msg.data + 0) = (uint8_t)(throttle_pct / 0.4f);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // E. HV Battery SoC — MEB 0x1C0 (big-endian, 0.1 % per LSB)
+            tx_msg.identifier = 0x1C0;
+            uint16_t raw_soc = (uint16_t)(ev_soc_pct * 10.0f);
+            *(tx_msg.data + 0) = (uint8_t)((raw_soc >> 8) & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)(raw_soc & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // F. HV Pack Voltage — MEB 0x1C1 (big-endian, 0.1 V per LSB)
+            tx_msg.identifier = 0x1C1;
+            uint16_t raw_hv = (uint16_t)(ev_hv_voltage * 10.0f);
+            *(tx_msg.data + 0) = (uint8_t)((raw_hv >> 8) & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)(raw_hv & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // G. Cell voltage delta — MEB 0x1C2
+            tx_msg.identifier = 0x1C2;
+            *(tx_msg.data + 0) = 8; // 8 mV bench delta
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // H. Charging power — MEB 0x29E (big-endian, 0.1 kW per LSB, byte 2 = active flag)
+            tx_msg.identifier = 0x29E;
+            uint16_t raw_chg = (uint16_t)(ev_charging_kw * 10.0f);
+            *(tx_msg.data + 0) = (uint8_t)((raw_chg >> 8) & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)(raw_chg & 0xFF);
+            *(tx_msg.data + 2) = ev_charging_act ? 0x01 : 0x00;
+            for(int i = 3; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // I. Regen torque — MEB 0x1A4 (big-endian signed, 0.25 Nm per LSB)
+            tx_msg.identifier = 0x1A4;
+            int16_t raw_regen = (int16_t)(ev_regen_torque / 0.25f);
+            *(tx_msg.data + 0) = (uint8_t)((raw_regen >> 8) & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)(raw_regen & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // J. Gear selector / drive mode — MEB 0x540
+            tx_msg.identifier = 0x540;
+            *(tx_msg.data + 0) = (uint8_t)((displayed_gear << 4) | (sport_mode ? 0x04 : 0x03));
+            *(tx_msg.data + 1) = sport_mode ? 0x01 : 0x00;
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // K. Odometer — MEB 0x5A0 (0.1 km units, big-endian)
+            tx_msg.identifier = 0x5A0;
+            uint32_t raw_odo_meb = (uint32_t)(odometer_km * 10.0f);
+            *(tx_msg.data + 0) = (uint8_t)((raw_odo_meb >> 24) & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)((raw_odo_meb >> 16) & 0xFF);
+            *(tx_msg.data + 2) = (uint8_t)((raw_odo_meb >> 8) & 0xFF);
+            *(tx_msg.data + 3) = (uint8_t)(raw_odo_meb & 0xFF);
+            for(int i = 4; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // L. Exterior temp — MEB 0x317 (raw = °C + 40)
+            tx_msg.identifier = 0x317;
+            *(tx_msg.data + 0) = (uint8_t)(exterior_temp + 40.0f);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+        }
+        else if (active_vehicle_profile.network_generation == SERIES_PQ24_PL45) {
+            // === PQ24 EARLY GENERATION BENCH FRAMES ===
+            // Only transmit the basic mechanical signals that PQ24 actually broadcasts.
+
+            // A. Engine Speed — PQ24 0x280 (little-endian, 0.25 RPM/LSB)
+            tx_msg.identifier = 0x280;
+            uint16_t raw_rpm_pq24 = (uint16_t)(target_rpm / 0.25f);
+            *(tx_msg.data + 0) = (uint8_t)(raw_rpm_pq24 & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)((raw_rpm_pq24 >> 8) & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // B. Thermal — PQ24 0x288 (coolant byte 0, oil byte 1, raw = °C + 40)
+            tx_msg.identifier = 0x288;
+            *(tx_msg.data + 0) = (uint8_t)(target_h2o + 40);
+            *(tx_msg.data + 1) = (uint8_t)(target_oil + 40);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // C. MAP / Boost — PQ24 0x380 (raw byte × 10 = absolute mbar)
+            tx_msg.identifier = 0x380;
+            int abs_mbar_pq24 = (int)((target_boost * 1000.0f) + 1013.0f);
+            int raw_map_pq24  = abs_mbar_pq24 / 10;
+            *(tx_msg.data + 0) = (uint8_t)(raw_map_pq24 > 255 ? 255 : raw_map_pq24);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // D. Vehicle Speed — PQ24 0x0C0 (0.01 km/h/LSB, little-endian)
+            tx_msg.identifier = 0x0C0;
+            uint16_t raw_spd_pq24 = (uint16_t)(vehicle_speed / 0.01f);
+            *(tx_msg.data + 0) = (uint8_t)(raw_spd_pq24 & 0xFF);
+            *(tx_msg.data + 1) = (uint8_t)((raw_spd_pq24 >> 8) & 0xFF);
+            for(int i = 2; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // E. Throttle — PQ24 0x088 (0.4 %/LSB)
+            tx_msg.identifier = 0x088;
+            *(tx_msg.data + 0) = (uint8_t)(throttle_pct / 0.4f);
+            for(int i = 1; i < 8; i++) *(tx_msg.data + i) = 0x00;
+            twai_transmit_v2(*(twai_ports + 0), &tx_msg, 0);
+
+            // NOTE: No 0x540 gear frame, no 0x5A0 odometer frame on PQ24.
+            // NOTE: No 0x65D exterior temp on all PQ24 variants; omit from bench.
+        }
+        else if (active_vehicle_profile.network_generation == SERIES_MQB_A_CLASS) {
             // A. Pack Engine Speed to MQB Bus standard (ID: 0x0FC)
             tx_msg.identifier = 0x0FC;
             uint16_t raw_rpm = (uint16_t)(target_rpm / 0.25);

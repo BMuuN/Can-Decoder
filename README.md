@@ -3,7 +3,7 @@
 A modular, extensible real-time CAN bus decoder and vehicle telemetry display system built for ESP32 microcontrollers. Designed to decode, interpret, and visualize automotive CAN bus messages from any CAN-equipped vehicle.
 
 **Current Support:** Volkswagen Group vehicles (Audi, Volkswagen, Skoda, Seat/Cupra, Porsche)
-**Platform Coverage:** 38 Models vehicle models across 4 major electrical architectures (MQB, PQ-Legacy, MLB, Compact A0)
+**Platform Coverage:** 56+ vehicle models across 6 major electrical architectures (PQ24/PL45, PQ35/PQ46, MQB/MLB, MQB-Evo/MEB)
 **Future Support:** Extensible architecture enables support for any CAN-equipped platform
 
 ---
@@ -52,22 +52,25 @@ The system is designed from the ground up for **platform-agnostic extensibility*
 ### Core Decoding
 - ✅ **Multi-frame CAN message assembly** (ISO-TP protocol for messages >8 bytes)
 - ✅ **Platform-specific signal extraction** with byte-level precision
-- ✅ **4 unified decoding cores** (MQB, PQ-Legacy, MLB, Compact) eliminate redundant code
+- ✅ **6 unified decoding cores** (PQ24, PQ35, MQB, MLB, Compact, MEB) eliminate redundant code
 - ✅ **Real-time metric updates** at 1ms resolution (Core 1 pinned task)
 - ✅ **Bench telemetry simulator** with programmable ramp profiles for testing without vehicle
-- ✅ **Grouped signal coverage** for drivetrain, gearbox, comfort, infotainment, and passive diagnostics
+- ✅ **Grouped signal coverage** for drivetrain, gearbox, comfort, infotainment, diagnostics, and EV/battery
 - ✅ **Human-readable translation layer** for indicators, lighting, drive mode, odometer, media source, and ECU status
 
 ### Vehicle Platform Support
+- ✅ **PQ24/PQ34/PL45** (5 vehicle models) - Early CAN era ~2001-2005 (Golf 4, Bora, Polo 9N, Audi A3 8L, A4 B6)
 - ✅ **MQB Matrix** (17 vehicle models) - Modern transverse engines
-- ✅ **PQ-Legacy** (12 vehicle models) - CAN-TP2.0 legacy platform
+- ✅ **PQ-Legacy (PQ35/PQ46/PL46)** (12 vehicle models) - CAN-TP2.0 legacy platform
 - ✅ **MLB Longitudinal** (12 vehicle models) - Premium/performance longitudinal engines
 - ✅ **Compact A0** (5 vehicle models) - Small economy city cars
+- ✅ **MQB-Evo/MEB Electric** (7 vehicle models) - CAN-FD/Ethernet EV platform (ID.3, ID.4, ID.5, ID.Buzz, Q4 e-tron, Enyaq, Born)
 - ✅ **Generic fallback** - Unknown vehicles still display metrics
 
 ### Display & UI
 - ✅ LVGL graphics engine (1280×720 landscape display with GT911 capacitive touch)
-- ✅ Four tabbed dashboards: Performance, Comfort, Infotainment, Diagnostic
+- ✅ **Platform-aware conditional rendering** – sections not supported by the selected vehicle are automatically hidden
+- ✅ Five tabbed dashboards: Performance, Comfort, Infotainment, Battery (MEB only), Diagnostic
 - ✅ Dynamic gauge scaling per platform (RPM, boost, temperature limits)
 - ✅ Color-coded status indicators (cool blue, normal green/brand color, alert red)
 - ✅ Interactive peak boost reset button
@@ -154,6 +157,27 @@ The system is designed from the ground up for **platform-agnostic extensibility*
 
 ## Supported Platforms & Vehicles
 
+### Group 5: PQ24 / PQ34 / PL45 (Early CAN Era, ~2001–2005)
+**5 Models** – Platform file: `Platform_PQ24_Early.cpp`
+
+**What we know & can detect:**
+- Cluster-integrated or simple standalone Gateway (Address 19)
+- Drive Train Bus (500 kbps): Engine (01), Transmission (02), ABS (03), Airbag (15)
+- Comfort Bus (100 kbps): Central Convenience (46), Door Modules (42/52), Climatronic (08)
+- Infotainment Bus (100 kbps): Radio/basic navigation only
+
+**Audi:**
+- A3 8L, A4 B6 (8E/8H)
+
+**Volkswagen:**
+- Golf MK4 (1J), Polo 9N, Bora (1C)
+
+**Decoded signals:** RPM, speed, throttle, coolant temp, MAP/boost (where fitted), exterior temp, door states (front only), handbrake, basic ignition/key status
+
+**Not decoded on PQ24:** Odometer CAN broadcast, gear position CAN, rear door signals, MMI, phone, media metadata, drive mode, interior lights, indicators
+
+---
+
 ### Group 1: MQB Matrix (Modern Transverse Engines)
 **17 Models** – Platform file: `Platform_MQB_Matrix.cpp`
 
@@ -169,8 +193,14 @@ The system is designed from the ground up for **platform-agnostic extensibility*
 **Seat/Cupra:**
 - Leon MK3, Cupra Leon/Formentor
 
-### Group 2: PQ-Legacy (CAN-TP2.0 Legacy Vehicles)
+### Group 2: PQ-Legacy / PQ35 / PQ46 (CAN-TP2.0 Legacy Vehicles)
 **12 Models** – Platform file: `Platform_PQ_Legacy.cpp`
+
+**What we know & can detect:**
+- Standalone Gateway (Address 19) under dashboard – best-documented generation (~90% of IDs community-mapped)
+- Drive Train Bus (500 kbps): Engine, DSG (02), ABS (03), Steering Angle (04), Airbag (15), AWD (22)
+- Comfort Bus (100 kbps): BCM (09), Convenience (46), Doors (42/52), Climate (08), Park Assist (76)
+- Infotainment Bus (100 kbps): Radio (56), Nav (37), Sound (47), Phone/BT (77), Steering Wheel (16)
 
 **Audi:**
 - S3 8P, A6 C6, Q3 PQ35, Q7 4L, TT MK2
@@ -205,7 +235,88 @@ The system is designed from the ground up for **platform-agnostic extensibility*
 **Seat/Cupra:**
 - Ibiza MQB A0
 
-**Total Coverage: 38 Models Unique Vehicle Models across 4 Platforms**
+### Group 6: MQB-Evo / MEB Electric (CAN-FD / Automotive Ethernet Era)
+**7 Models** – Platform file: `Platform_MEB_Electric.cpp`
+
+**What we know & can detect:**
+- ICAS1 gateway server bridging CAN-FD to Automotive Ethernet (100Base-T1)
+- Drivetrain/Thermal Bus (CAN-FD): Electric motor controllers, BMS (8C), Heat pump/thermal
+- Autonomous Driving Bus (CAN-FD): Front radar, surround cameras
+- Note: Heavily SFD-protected; reverse-engineering community still active
+
+**Volkswagen:**
+- ID.3 (E1), ID.4 (E2), ID.5 (E3), ID.Buzz (E9/EB)
+
+**Audi:**
+- Q4 e-tron (FZ)
+
+**Skoda:**
+- Enyaq iV (I1)
+
+**Cupra:**
+- Born (K1)
+
+**Decoded signals:** Motor speed (RPM), vehicle speed, throttle, primary thermal loop temp, State of Charge (SoC %), HV battery voltage, charging power (kW), regen torque (Nm), motor temperature, cell voltage delta (mV), gear/drive mode selector, door states (front + rear), exterior temp, odometer, OTA update status
+
+**Not decoded on MEB:** Engine oil temp (no engine), turbo boost (electric), MMI physical keys (replaced by touchscreen)
+
+---
+
+**Total Coverage: 58+ Vehicle Models across 6 Platform Groups**
+
+---
+
+## Platform Capability Flags & UI Visibility
+
+Each platform group defines a `PlatformCapabilities` struct that drives UI conditional rendering. When a vehicle is identified, the capability flags for its platform are loaded and transmitted in every WebSocket JSON payload.
+
+| Capability Flag | PQ24 | PQ35 | MQB/MLB | MEB |
+|---|---|---|---|---|
+| `cap_boost` (turbo boost) | ✅ (MAP) | ✅ | ✅ | ❌ |
+| `cap_oil` (oil temp) | ❌ | ✅ | ✅ | ❌ |
+| `cap_gear` (gear position) | ❌ | ✅ | ✅ | ✅ |
+| `cap_mode` (drive mode) | ❌ | ❌ | ✅ | ✅ |
+| `cap_odo` (odometer) | ❌ | ✅ | ✅ | ✅ |
+| `cap_indc` (indicators) | ❌ | ✅ | ✅ | ✅ |
+| `cap_lights` (ext. lights) | ❌ | ✅ | ✅ | ✅ |
+| `cap_cabin` (interior lights) | ❌ | ✅ | ✅ | ✅ |
+| `cap_rdoors` (rear doors) | ❌ | ✅ | ✅ | ✅ |
+| `cap_media` (media source) | ❌ | ✅ | ✅ | ✅ |
+| `cap_phone` (phone status) | ❌ | ✅ | ✅ | ✅ |
+| `cap_mmi` (MMI keys) | ❌ | ✅ | ✅ | ❌ |
+| `cap_acc` (ACC radar) | ❌ | ❌ | ✅ | ✅ |
+| `cap_ambient` (ambient RGB) | ❌ | ❌ | ✅ | ✅ |
+| `cap_ev` (EV battery) | ❌ | ❌ | ❌ | ✅ |
+| `cap_charge` (charging kW) | ❌ | ❌ | ❌ | ✅ |
+| `cap_regen` (regen torque) | ❌ | ❌ | ❌ | ✅ |
+| `cap_mtemp` (motor temp) | ❌ | ❌ | ❌ | ✅ |
+| `cap_ota` (OTA updates) | ❌ | ❌ | ❌ | ✅ |
+
+The web dashboard JavaScript `applyCaps(d)` function reads these flags and shows/hides sections:
+- Unsupported cards are hidden with CSS class `cap-hidden` (`display:none!important`)
+- The **BATTERY** nav tab only appears for MEB vehicles (`cap_ev = true`)
+- RPM label changes to "Motor Speed" for MEB vehicles
+- Coolant label changes to "Thermal Temp" for MEB vehicles
+
+---
+
+## Module Scan Catalog
+
+A per-platform module catalog (`getPlatformModuleCatalog()`) is available for diagnostic scanning. Each entry includes the address byte and English name:
+
+### PQ24 Scannable Modules
+`01 Engine`, `02 Transmission`, `03 ABS`, `08 Climate`, `15 Airbag`, `42 Driver Door`, `46 Central Convenience`, `52 Passenger Door`, `56 Radio`
+
+### PQ35/PQ46 Scannable Modules
+`01 Engine`, `02 Gearbox (DSG)`, `03 ABS/ESP`, `04 Steering Angle Sensor`, `08 Climate Control`, `09 Central Electronics/BCM`, `15 Airbag`, `16 Steering Wheel Electronics`, `17 Instruments`, `18 Auxiliary Heater`, `22 AWD/Haldex`, `37 Navigation`, `42 Driver Door`, `46 Central Convenience`, `47 Sound System`, `52 Passenger Door`, `56 Radio (RCD/RNS)`, `62 Rear Left Door`, `72 Rear Right Door`, `76 Parking Assistance`, `77 Telephone/Bluetooth`, `A5 Front Camera`
+
+### MQB/MLB Scannable Modules
+`01 Engine`, `02 Gearbox`, `03 Brakes/ABS/ESP`, `04 Steering Assist`, `05 ACC Radar`, `07 Display Unit`, `08 Climate Control`, `09 Central Electronics/BCM`, `13 Adaptive Cruise Control`, `14 Wheel Damping`, `15 Airbag SRS`, `16 Steering Wheel`, `17 Virtual Cockpit / Instruments`, `19 CAN Gateway`, `2B Steering Column`, `3C Lane Assist`, `42 Driver Door`, `44 Steering Assistance`, `47 Audio/Sound`, `4C Tyre Pressure Monitor`, `4E Steering Column Electronics`, `52 Passenger Door`, `55 Headlights L/R`, `5F Infotainment (MIB)`, `62 Rear Left Door`, `65 Tire Pressure Module`, `6C Camera / rearview`, `72 Rear Right Door`, `76 Parking Assistance`, `A5 Front Camera`, `A9 Surround Camera`
+
+### MEB Electric Scannable Modules
+`01 Drive Control (VCU)`, `02 Rear Motor/Drive Unit`, `03 Brake Boost (iBooster)`, `04 Power Steering (EPS)`, `05 Occupant Protection`, `06 Seat Comfort`, `07 Display`, `08 Climate/Heat Pump`, `09 Central Electronics/BCM`, `0D Cruise Control`, `0E Media Interface`, `14 Battery Management (BMS)`, `16 Steering Wheel Electronics`, `17 Virtual Cockpit`, `19 CAN Gateway (ICAS1)`, `22 DC/DC Converter`, `23 Brake Vacuum`, `24 Traction Battery Thermal`, `25 Immobiliser`, `26 Onboard Charger (OBC)`, `27 Trailer Function`, `2B Steering Column`, `2E Supplemental Restraints`, `3C Lane Keeping Assist`, `3D Special Function`, `42 Driver Door Module`, `44 Steering Boost`, `47 Amplifier/Audio`, `4C Tyre Pressure Monitor`, `52 Passenger Door`, `5F Infotainment (MIB3)`, `62 Rear Left Door`, `6C Rearview Camera`, `72 Rear Right Door`, `76 Parking Assistance`, `77 Telephone/Bluetooth`, `82 Head Up Display`, `8C High Voltage Battery Management`, `A5 Front Radar`, `AD Driver Assistance`
+
+Use `getPlatformEnglishSummary(series)` for a human-readable interpretation summary per platform.
 
 ---
 
@@ -412,6 +523,46 @@ Every 100ms: Serialize metrics to JSON
 ---
 
 ## Platform-Specific Signal Mappings
+
+### PQ24 Early Generation (2001–2005)
+```
+Signal                  Frame ID    Bytes    Scale     Offset      Unit
+─────────────────────────────────────────────────────────────────────
+Engine RPM              0x280       0–1      0.25      0           RPM
+Coolant Temperature     0x288       0        1.0       −40°C       °C
+Oil Temperature         0x288       1        1.0       −40°C       °C
+MAP/Boost Pressure      0x380       0        10 mbar   −1013 mbar  bar
+Vehicle Speed           0x0C0       0–1      0.01      0           km/h
+Throttle Position       0x088       0        0.4       0           %
+Exterior Temp           0x65D       0        0.5       −40°C       °C
+Door Status             0x351       0 bits   1.0       —           bool
+Handbrake               0x3BE       0 bit0   1.0       —           bool
+```
+
+**Interpreters:** AudiA38LInterpreter, AudiA4B6Interpreter, VwGolf4Interpreter, VwPolo9NInterpreter, VwBoraInterpreter
+
+### MEB Electric (2020–present)
+```
+Signal                  Frame ID    Bytes    Scale     Offset      Unit
+─────────────────────────────────────────────────────────────────────
+Motor Speed             0x0FC       0–1      0.25      0           RPM
+Thermal Temp            0x1A2       1        1.0       −40°C       °C
+Motor Temperature       0x1A2       0        1.0       −40°C       °C
+Vehicle Speed           0x096       0–1      0.01      0           km/h
+Throttle Position       0x084       0        0.4       0           %
+Exterior Temp           0x317       0        0.5       −40°C       °C
+State of Charge (SoC)   0x1C0       0–1      0.1       0           %
+HV Battery Voltage      0x1C1       0–1      0.1       0           V
+Cell Voltage Delta       0x1C2       0        1.0       0           mV
+Charging Power          0x29E       0–1      0.1       0           kW
+Regen Torque            0x1A4       0–1 (s16) 0.25    0           Nm
+Gear / Drive Mode       0x540       0–1      mixed     —           label
+Door Status             0x351       0 bits   1.0       —           bool
+Odometer                0x5A0       0–3      0.1       0           km
+OTA Status              0x392       0 bit0   1.0       —           bool
+```
+
+**Interpreters:** VwId3Interpreter, VwId4Interpreter, VwId5Interpreter, VwIdBuzzInterpreter, AudiQ4EtronInterpreter, SkodaEnyaqInterpreter, CupraBorhInterpreter
 
 ### MQB Matrix (Modern Cars)
 ```
@@ -714,12 +865,43 @@ else if (strcmp(chassis, "YOUR_CODE") == 0)
     sys_ctx->interpreter = new YourNewVehicleInterpreter();
 ```
 
-### Step 4: Test on Bench
+### Step 4: Define Platform Capabilities
+
+Add a case for your new series in `getPlatformCapabilities()` in `VehicleInterpreters.cpp`:
+
+```cpp
+case SERIES_YOUR_NEW:
+    caps.has_boost         = true;   // Does this platform have turbo boost CAN?
+    caps.has_oil_temp      = true;
+    caps.has_gear_position = true;
+    caps.has_drive_mode    = false;  // Set to false if not available
+    // ... set all flags
+    break;
+```
+
+The UI and WebSocket payload will automatically hide unsupported sections.
+
+### Step 5: Add Module Catalog (optional)
+
+Add your platform's scannable module list to `getPlatformModuleCatalog()` in `VehicleInterpreters.cpp`:
+
+```cpp
+case SERIES_YOUR_NEW:
+    return { {0x01, "Engine"}, {0x03, "ABS"}, ... };
+```
+
+### Step 6: Update Bench Simulator
+
+Add bench telemetry patterns for your platform in `VehicleSimulator.cpp` so bench testing produces realistic values without a vehicle connected.
+
+### Step 7: Test on Bench
 
 1. Inject test CAN frames with known values
 2. Verify metrics update correctly
 3. Calibrate scale factors and offsets
-4. Test on real vehicle
+4. Confirm UI hides unsupported sections (capability flags should propagate within one WebSocket cycle)
+5. Add chassis code to `kBenchVinSignatures` and `kBenchChassisYearRanges` for automated `fulltest` sweep
+6. Test on real vehicle
 
 ---
 
@@ -733,9 +915,16 @@ Can-Decoder/
 │                                    # main loop & CockpitTask
 │
 ├── VehicleInterpreters.h            # Abstract base class, global
-│                                    # context, forward declarations
+│                                    # context, forward declarations,
+│                                    # PlatformCapabilities struct
 │
-├── VehicleInterpreters.cpp          # Global init, generic fallback
+├── VehicleInterpreters.cpp          # Global init, generic fallback,
+│                                    # getPlatformCapabilities(),
+│                                    # getPlatformModuleCatalog(),
+│                                    # getPlatformEnglishSummary()
+│
+├── Platform_PQ24_Early.cpp          # 5 PQ24/PQ34 interpreters +
+│                                    # parsePq24DriveTrainFrame()
 │
 ├── Platform_MQB_Matrix.cpp          # 17 MQB interpreters +
 │                                    # parseStandardMqbFrame()
@@ -749,7 +938,10 @@ Can-Decoder/
 ├── Platform_Small_Compact.cpp       # 5 Compact A0 interpreters +
 │                                    # dual parsers
 │
-├── VehicleSimulator.h/cpp           # Bench simulator
+├── Platform_MEB_Electric.cpp        # 7 MEB/EV interpreters +
+│                                    # parseMebDriveTrainFrame()
+│
+├── VehicleSimulator.h/cpp           # Bench simulator (platform-aware)
 │
 └── README.md                        # This file
 ```
@@ -758,6 +950,7 @@ Can-Decoder/
 
 - **Unified Parsing Cores:** Each platform has single shared frame parser
 - **Modular Interpreters:** Vehicle-specific logic in `configureUiLimits()` and colors
+- **Centralized Capability Flags:** `PlatformCapabilities` struct drives all UI hiding
 - **Extensibility:** Adding a new vehicle requires ~15 lines of code
 - **Type Safety:** Abstract interface ensures all vehicles implement required methods
 
