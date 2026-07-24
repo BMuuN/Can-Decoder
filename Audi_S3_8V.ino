@@ -63,7 +63,7 @@ static constexpr uint32_t SERIAL_BAUD_RATE = 921600; // USB CDC virtual port; 92
 // SECURITY: Change AP_PASSWORD_DEFAULT above before deploying to a real vehicle.
 
 // --- THREAD-SAFE FIXED CHAR BUFFER ARRAY ---
-static char global_ws_buffer[2048]; // Expanded from 512 to 2048 bytes to accommodate grouped telemetry expansions
+static char global_ws_buffer[4096]; // Expanded to 4096 bytes to accommodate EV fields and platform capability flags
 // std::atomic<bool> with acquire/release semantics provides the memory-ordering
 // fence needed on RISC-V (ESP32-P4) so the buffer writes are visible to Core 0
 // before it observes the flag as true.  Plain 'volatile' does NOT provide this.
@@ -164,15 +164,27 @@ static const BenchVinSignature kBenchVinSignatures[] = {
     {"WAU", "4F"}, {"WAU", "4G"}, {"WAU", "4K"}, {"WAU", "8T"}, {"WAU", "8F"}, {"WAU", "4H"}, {"WAU", "4N"},
     {"WAU", "8U"}, {"WAU", "F3"}, {"WAU", "8R"}, {"WAU", "FY"}, {"WAU", "4L"}, {"WAU", "4M"}, {"WAU", "8J"},
     {"WAU", "8S"}, {"WAU", "GA"}, {"WAU", "8X"}, {"WAU", "GB"},
+    // Audi PQ24 early
+    {"WAU", "8L"}, {"WAU", "8E"}, {"WAU", "8H"},
+    // Audi MEB electric
+    {"WAU", "FZ"},
     // Volkswagen
     {"WVW", "1K"}, {"WVW", "5K"}, {"WVW", "AJ"}, {"WVW", "5G"}, {"WVW", "BA"}, {"WVW", "AM"}, {"WVW", "AU"},
     {"WVW", "CD"}, {"WVW", "3C"}, {"WVW", "AN"}, {"WVW", "3G"}, {"WVW", "CB"}, {"WVW", "A3"}, {"WVW", "13"},
     {"WVW", "5N"}, {"WVW", "AD"}, {"WVW", "AX"}, {"WVW", "CT"}, {"WVW", "6R"}, {"WVW", "6C"}, {"WVW", "AW"},
     {"WVW", "3H"},
+    // Volkswagen PQ24 early
+    {"WVW", "1J"}, {"WVW", "9N"}, {"WVW", "1C"},
+    // Volkswagen MEB electric
+    {"WVW", "E1"}, {"WVW", "E2"}, {"WVW", "E3"}, {"WVW", "E9"}, {"WVW", "EB"},
     // Seat / Cupra
     {"VSS", "1P"}, {"VSS", "5F"}, {"VSS", "KL"}, {"VSS", "KJ"},
+    // Cupra Born (MEB)
+    {"VSS", "K1"},
     // Skoda
     {"TMB", "1Z"}, {"TMB", "5E"}, {"TMB", "NX"}, {"TMB", "3T"}, {"TMB", "3V"},
+    // Skoda Enyaq (MEB)
+    {"TMB", "I1"},
     // Porsche
     {"WP0", "92"}, {"WP0", "9B"}
 };
@@ -186,6 +198,10 @@ static const BenchChassisYearRange kBenchChassisYearRanges[] = {
     {"8U", 2011, 2018}, {"F3", 2018, FULLTEST_CURRENT_YEAR}, {"8R", 2008, 2017}, {"FY", 2017, FULLTEST_CURRENT_YEAR},
     {"4L", 2005, 2015}, {"4M", 2015, FULLTEST_CURRENT_YEAR}, {"8J", 2006, 2014}, {"8S", 2014, 2023},
     {"GA", 2016, FULLTEST_CURRENT_YEAR}, {"8X", 2010, 2018}, {"GB", 2018, FULLTEST_CURRENT_YEAR},
+    // Audi PQ24 early
+    {"8L", 1996, 2003}, {"8E", 2000, 2008}, {"8H", 2002, 2009},
+    // Audi MEB electric
+    {"FZ", 2021, FULLTEST_CURRENT_YEAR},
     // Volkswagen
     {"1K", 2003, 2009}, {"5K", 2008, 2013}, {"AJ", 2005, 2015}, {"5G", 2012, 2021},
     {"BA", 2012, 2021}, {"AM", 2012, 2021}, {"AU", 2012, 2021}, {"CD", 2019, FULLTEST_CURRENT_YEAR},
@@ -193,10 +209,19 @@ static const BenchChassisYearRange kBenchChassisYearRanges[] = {
     {"A3", 2023, FULLTEST_CURRENT_YEAR}, {"13", 2008, 2017}, {"5N", 2007, 2017},
     {"AD", 2016, 2023}, {"AX", 2016, 2023}, {"CT", 2023, FULLTEST_CURRENT_YEAR},
     {"6R", 2009, 2018}, {"6C", 2014, 2018}, {"AW", 2017, FULLTEST_CURRENT_YEAR}, {"3H", 2017, FULLTEST_CURRENT_YEAR},
+    // Volkswagen PQ24 early
+    {"1J", 1997, 2006}, {"9N", 2001, 2010}, {"1C", 1998, 2006},
+    // Volkswagen MEB electric
+    {"E1", 2019, FULLTEST_CURRENT_YEAR}, {"E2", 2020, FULLTEST_CURRENT_YEAR}, {"E3", 2021, FULLTEST_CURRENT_YEAR},
+    {"E9", 2022, FULLTEST_CURRENT_YEAR}, {"EB", 2022, FULLTEST_CURRENT_YEAR},
     // Seat / Cupra
     {"1P", 2005, 2012}, {"5F", 2012, 2020}, {"KL", 2020, FULLTEST_CURRENT_YEAR}, {"KJ", 2017, FULLTEST_CURRENT_YEAR},
+    // Cupra Born (MEB)
+    {"K1", 2021, FULLTEST_CURRENT_YEAR},
     // Skoda
     {"1Z", 2004, 2013}, {"5E", 2012, 2020}, {"NX", 2020, FULLTEST_CURRENT_YEAR}, {"3T", 2008, 2015}, {"3V", 2015, FULLTEST_CURRENT_YEAR},
+    // Skoda Enyaq (MEB)
+    {"I1", 2020, FULLTEST_CURRENT_YEAR},
     // Porsche
     {"92", 2010, 2018}, {"9B", 2014, 2023}
 };
@@ -641,7 +666,7 @@ const char index_html[] PROGMEM = R"rawhtml(
         header h1{font-size:1.1em;letter-spacing:2px;color:#32c832}
         #ws_status{font-size:0.75em;padding:4px 10px;border-radius:20px;background:#333;color:#888}
         #ws_status.connected{background:#1a3a1a;color:#32c832}
-        nav{display:flex;background:#1a1a1a;border-bottom:1px solid #333}
+        nav{display:flex;background:#1a1a1a;border-bottom:1px solid #333;flex-wrap:wrap}
         nav button{flex:1;padding:14px;background:none;border:none;color:#888;cursor:pointer;font-size:0.9em;letter-spacing:1px;border-bottom:3px solid transparent;transition:all .2s}
         nav button.active{color:#fff;border-bottom-color:#32c832}
         nav button:hover{color:#ccc}
@@ -671,6 +696,11 @@ const char index_html[] PROGMEM = R"rawhtml(
         td{padding:10px 14px;border-bottom:1px solid #2a2a2a}
         td:first-child{color:#666;width:40%}
         td:last-child{font-weight:600;color:#eee}
+        /* Platform-hidden elements */
+        .cap-hidden{display:none!important}
+        /* EV battery bar */
+        .soc-bar-bg{background:#333;border-radius:8px;height:24px;width:100%;margin-top:8px;overflow:hidden}
+        .soc-bar-fill{height:100%;border-radius:8px;transition:width .5s,background .5s}
     </style>
 </head>
 <body>
@@ -682,6 +712,7 @@ const char index_html[] PROGMEM = R"rawhtml(
     <button class="active" onclick="showTab('perf',this)">PERFORMANCE</button>
     <button onclick="showTab('comfort',this)">COMFORT</button>
     <button onclick="showTab('info',this)">INFOTAINMENT</button>
+    <button id="nav_battery" class="cap-hidden" onclick="showTab('battery',this)">BATTERY</button>
     <button onclick="showTab('diag',this)">DIAGNOSTIC</button>
 </nav>
 
@@ -689,16 +720,16 @@ const char index_html[] PROGMEM = R"rawhtml(
 <div id="perf" class="tab active">
 <div class="grid">
     <div class="card">
-        <div class="lbl">Engine Speed</div>
+        <div class="lbl" id="rpm_lbl">Engine Speed</div>
         <div id="rpm" class="val green">0</div>
-        <div class="unit">RPM</div>
+        <div class="unit" id="rpm_unit">RPM</div>
     </div>
     <div class="card">
         <div class="lbl">Vehicle Speed</div>
         <div id="spd" class="val white">0</div>
         <div class="unit">km/h</div>
     </div>
-    <div class="card">
+    <div id="boost_card" class="card">
         <div class="lbl">Turbo Boost</div>
         <div id="boost" class="val green">0.00</div>
         <div class="unit">Bar</div>
@@ -709,29 +740,34 @@ const char index_html[] PROGMEM = R"rawhtml(
         <div id="thr" class="val white">0</div>
         <div class="unit">%</div>
     </div>
-    <div class="card">
+    <div id="oil_card" class="card">
         <div class="lbl">Engine Oil</div>
         <div id="oil" class="val blue">0</div>
         <div class="unit">&deg;C</div>
     </div>
     <div class="card">
-        <div class="lbl">Coolant Temp</div>
+        <div class="lbl" id="coolant_lbl">Coolant Temp</div>
         <div id="coolant" class="val blue">0</div>
         <div class="unit">&deg;C</div>
     </div>
-    <div class="card">
+    <div id="gear_card" class="card">
         <div class="lbl">Gearbox</div>
         <div id="gear" class="val white">UNAVAILABLE</div>
         <div class="unit">selector / current gear</div>
     </div>
-    <div class="card">
+    <div id="mode_card" class="card">
         <div class="lbl">Drive Mode</div>
         <div id="mode" class="val white" style="font-size:1.5em">UNAVAILABLE</div>
     </div>
-    <div class="card">
+    <div id="odo_card" class="card">
         <div class="lbl">Odometer</div>
         <div id="odo" class="val white" style="font-size:1.4em">UNAVAILABLE</div>
         <div class="unit">km</div>
+    </div>
+    <div id="ev_regen_card" class="card cap-hidden">
+        <div class="lbl">Regen Torque</div>
+        <div id="ev_regen" class="val green">0</div>
+        <div class="unit">Nm</div>
     </div>
 </div>
 </div>
@@ -753,15 +789,15 @@ const char index_html[] PROGMEM = R"rawhtml(
         <div class="lbl">Handbrake</div>
         <div id="hb" class="val green">OFF</div>
     </div>
-    <div class="card">
+    <div id="ind_card" class="card">
         <div class="lbl">Indicators</div>
         <div id="ind" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
     </div>
-    <div class="card">
+    <div id="lights_card" class="card">
         <div class="lbl">Exterior Lights</div>
         <div id="lights" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
     </div>
-    <div class="card">
+    <div id="cabin_card" class="card">
         <div class="lbl">Interior Lights</div>
         <div id="cabin" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
     </div>
@@ -777,12 +813,12 @@ const char index_html[] PROGMEM = R"rawhtml(
         <div class="door-lbl">PASSENGER</div>
         <div class="door-state" id="ds_pd">CLOSED</div>
     </div>
-    <div class="door-cell" id="dc_rld">
+    <div id="dc_rld" class="door-cell">
         <div class="door-icon">&#x1F6AA;</div>
         <div class="door-lbl">REAR LEFT</div>
         <div class="door-state" id="ds_rld">CLOSED</div>
     </div>
-    <div class="door-cell" id="dc_rrd">
+    <div id="dc_rrd" class="door-cell">
         <div class="door-icon">&#x1F6AA;</div>
         <div class="door-lbl">REAR RIGHT</div>
         <div class="door-state" id="ds_rrd">CLOSED</div>
@@ -793,7 +829,7 @@ const char index_html[] PROGMEM = R"rawhtml(
 <!-- TAB 3: INFOTAINMENT -->
 <div id="info" class="tab">
 <div class="grid">
-    <div class="card" style="min-width:300px">
+    <div id="mmi_card" class="card" style="min-width:300px">
         <div class="lbl">MMI Key Input</div>
         <div id="mmi_hex" class="val white">0x00</div>
         <div id="mmi_name" class="unit" style="font-size:1.1em;color:#f0a000;margin-top:8px">IDLE</div>
@@ -802,19 +838,55 @@ const char index_html[] PROGMEM = R"rawhtml(
         <div class="lbl">Electrical Bus</div>
         <div id="bus" class="val white" style="font-size:1.4em">---</div>
     </div>
-    <div class="card" style="min-width:260px">
+    <div id="media_card" class="card" style="min-width:260px">
         <div class="lbl">Media Source</div>
         <div id="src_name" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
         <div class="unit">Track / Preset: <span id="trk">--</span></div>
     </div>
-    <div class="card" style="min-width:260px">
+    <div id="phone_card" class="card" style="min-width:260px">
         <div class="lbl">Phone Status</div>
         <div id="phone" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
+    </div>
+    <div id="ota_card" class="card cap-hidden" style="min-width:260px">
+        <div class="lbl">OTA Update</div>
+        <div id="ota" class="val white" style="font-size:1.2em">UNAVAILABLE</div>
     </div>
 </div>
 </div>
 
-<!-- TAB 4: DIAGNOSTIC -->
+<!-- TAB 4: BATTERY (MEB/EV only, hidden for ICE) -->
+<div id="battery" class="tab cap-hidden">
+<div class="grid">
+    <div class="card" style="min-width:260px">
+        <div class="lbl">State of Charge</div>
+        <div id="ev_soc" class="val green">0</div>
+        <div class="unit">%</div>
+        <div class="soc-bar-bg"><div id="ev_soc_bar" class="soc-bar-fill" style="width:0%;background:#32c832"></div></div>
+    </div>
+    <div class="card">
+        <div class="lbl">HV Voltage</div>
+        <div id="ev_hv" class="val white">0</div>
+        <div class="unit">V</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Charging Power</div>
+        <div id="ev_chg" class="val blue">0.0</div>
+        <div class="unit">kW</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Motor Temp</div>
+        <div id="ev_mtemp" class="val blue">0</div>
+        <div class="unit">&deg;C</div>
+    </div>
+    <div class="card">
+        <div class="lbl">Cell Voltage Delta</div>
+        <div id="ev_cdelta" class="val green">0</div>
+        <div class="unit">mV</div>
+    </div>
+</div>
+</div>
+
+<!-- TAB 5: DIAGNOSTIC -->
 <div id="diag" class="tab">
 <div class="card" style="max-width:600px;margin:0 auto;text-align:left">
 <table>
@@ -839,6 +911,7 @@ const char index_html[] PROGMEM = R"rawhtml(
 <script>
 var gw = `ws://${window.location.hostname}/ws`;
 var ws;
+var gCapEv = false;
 window.addEventListener('load', connect);
 
 function connect() {
@@ -864,7 +937,10 @@ function colorTemp(v, cold, hot) {
 }
 
 function doorCell(cellId, stateId, open) {
-    document.getElementById(cellId).className = 'door-cell' + (open ? ' open' : '');
+    var el = document.getElementById(cellId);
+    if (!el) return;
+    var hidden = el.classList.contains('cap-hidden');
+    el.className = 'door-cell' + (open ? ' open' : '') + (hidden ? ' cap-hidden' : '');
     document.getElementById(stateId).textContent = open ? 'OPEN' : 'CLOSED';
 }
 
@@ -879,6 +955,64 @@ function statusLabel(active, known, onLabel, offLabel) {
     return active ? onLabel : offLabel;
 }
 
+function capShow(id, visible) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (visible) el.classList.remove('cap-hidden');
+    else el.classList.add('cap-hidden');
+}
+
+function applyCaps(d) {
+    var isEv  = d.cap_ev  === true;
+    var hasBoost  = d.cap_boost  === true;
+    var hasOil    = d.cap_oil    === true;
+    var hasGear   = d.cap_gear   === true;
+    var hasMode   = d.cap_mode   === true;
+    var hasOdo    = d.cap_odo    === true;
+    var hasIndc   = d.cap_indc   === true;
+    var hasLights = d.cap_lights === true;
+    var hasCabin  = d.cap_cabin  === true;
+    var hasRdoors = d.cap_rdoors === true;
+    var hasMedia  = d.cap_media  === true;
+    var hasPhone  = d.cap_phone  === true;
+    var hasMmi    = d.cap_mmi    === true;
+    var hasRegen  = d.cap_regen  === true;
+    var hasOta    = d.cap_ota    === true;
+
+    // PERFORMANCE tab visibility
+    capShow('boost_card',   hasBoost);
+    capShow('oil_card',     hasOil);
+    capShow('gear_card',    hasGear);
+    capShow('mode_card',    hasMode);
+    capShow('odo_card',     hasOdo);
+    capShow('ev_regen_card', hasRegen);
+
+    // Update RPM/speed label for EV
+    document.getElementById('rpm_lbl').textContent  = isEv ? 'Motor Speed' : 'Engine Speed';
+    document.getElementById('rpm_unit').textContent = 'RPM';
+    document.getElementById('coolant_lbl').textContent = isEv ? 'Thermal Temp' : 'Coolant Temp';
+
+    // COMFORT tab visibility
+    capShow('ind_card',    hasIndc);
+    capShow('lights_card', hasLights);
+    capShow('cabin_card',  hasCabin);
+    capShow('dc_rld',      hasRdoors);
+    capShow('dc_rrd',      hasRdoors);
+
+    // INFOTAINMENT tab visibility
+    capShow('mmi_card',   hasMmi);
+    capShow('media_card', hasMedia);
+    capShow('phone_card', hasPhone);
+    capShow('ota_card',   hasOta);
+
+    // BATTERY tab + nav button
+    capShow('nav_battery', isEv);
+    capShow('battery',     isEv);
+
+    // Remember EV state
+    gCapEv = isEv;
+}
+
 function update(d) {
     if (d.ok !== undefined && d.msg) {
         alert(d.msg);
@@ -890,6 +1024,9 @@ function update(d) {
                    document.getElementById('bus').textContent       = d.bus; }
     if (d.year)  document.getElementById('dg_year').textContent    = d.year;
     if (d.car)   document.getElementById('dg_car').textContent     = d.car;
+
+    // Apply platform capability gating when flags are present
+    if (d.cap_ev !== undefined) applyCaps(d);
 
     // Performance
     var rpm = d.rpm||0;
@@ -924,6 +1061,13 @@ function update(d) {
     var odoEl = document.getElementById('odo');
     odoEl.textContent = d.odo_ok ? (d.odo||0).toFixed(1) : 'UNAVAILABLE';
     odoEl.className = 'val ' + (d.odo_ok ? 'white' : 'blue');
+
+    // Regen torque (EV)
+    if (d.ev_regen_ok) {
+        var regenEl = document.getElementById('ev_regen');
+        regenEl.textContent = (d.ev_regen||0).toFixed(1);
+        regenEl.className = 'val ' + ((d.ev_regen||0) < 0 ? 'blue' : 'green');
+    }
 
     // Comfort
     document.getElementById('ext').textContent = (d.ext||0).toFixed(1);
@@ -977,6 +1121,36 @@ function update(d) {
     var phoneEl = document.getElementById('phone');
     phoneEl.textContent = statusLabel(d.phone, d.phone_ok, 'CALL ACTIVE', 'IDLE');
     phoneEl.className = 'val ' + (!d.phone_ok ? 'blue' : d.phone ? 'amber blink' : 'green');
+    var otaEl = document.getElementById('ota');
+    otaEl.textContent = statusLabel(d.ev_ota, d.ev_ota_ok, 'UPDATE ACTIVE', 'IDLE');
+    otaEl.className = 'val ' + (!d.ev_ota_ok ? 'blue' : d.ev_ota ? 'amber blink' : 'green');
+
+    // Battery / EV
+    if (gCapEv) {
+        var soc = d.ev_soc||0;
+        var socEl = document.getElementById('ev_soc');
+        socEl.textContent = soc.toFixed(1);
+        socEl.className = 'val ' + (soc < 15 ? 'red blink' : soc < 30 ? 'amber' : 'green');
+        var barEl = document.getElementById('ev_soc_bar');
+        barEl.style.width = Math.min(100, soc).toFixed(0) + '%';
+        barEl.style.background = soc < 15 ? '#ff3e3e' : soc < 30 ? '#f0a000' : '#32c832';
+
+        var hvEl = document.getElementById('ev_hv');
+        hvEl.textContent = (d.ev_hv||0).toFixed(1);
+        hvEl.className = 'val ' + (d.ev_hv_ok ? 'white' : 'blue');
+
+        var chgEl = document.getElementById('ev_chg');
+        chgEl.textContent = (d.ev_chg_kw||0).toFixed(1);
+        chgEl.className = 'val ' + (d.ev_chg_act ? 'green' : 'blue');
+
+        var mtEl = document.getElementById('ev_mtemp');
+        mtEl.textContent = (d.ev_mtemp||0).toFixed(0);
+        mtEl.className = 'val ' + colorTemp(d.ev_mtemp||0, 0, 90);
+
+        var cdEl = document.getElementById('ev_cdelta');
+        cdEl.textContent = (d.ev_cdelta||0).toFixed(0);
+        cdEl.className = 'val ' + ((d.ev_cdelta||0) > 50 ? 'red' : (d.ev_cdelta||0) > 20 ? 'amber' : 'green');
+    }
 
     // Diagnostics
     document.getElementById('dg_mil').textContent   = statusLabel(d.mil, d.mil_ok, 'ON', 'OFF');
@@ -1235,6 +1409,51 @@ void CockpitCoreProcessor(void *pvParameters) {
         doc["diag_pid"] = m_snap.last_diag_pid;
         doc["diag_src"] = m_snap.last_diag_source;
         doc["diag_cnt"] = m_snap.diag_response_counter;
+
+        // EV / MEB specific fields (zero / false on ICE platforms)
+        doc["ev_soc"]        = m_snap.ev_soc_pct;
+        doc["ev_soc_ok"]     = m_snap.ev_soc_known;
+        doc["ev_hv"]         = m_snap.ev_hv_voltage;
+        doc["ev_hv_ok"]      = m_snap.ev_hv_voltage_known;
+        doc["ev_chg_kw"]     = m_snap.ev_charging_kw;
+        doc["ev_chg_ok"]     = m_snap.ev_charging_known;
+        doc["ev_chg_act"]    = m_snap.ev_charging_active;
+        doc["ev_regen"]      = m_snap.ev_regen_torque;
+        doc["ev_regen_ok"]   = m_snap.ev_regen_known;
+        doc["ev_mtemp"]      = m_snap.ev_motor_temp;
+        doc["ev_mtemp_ok"]   = m_snap.ev_motor_temp_known;
+        doc["ev_cdelta"]     = m_snap.ev_cell_voltage_delta;
+        doc["ev_cdelta_ok"]  = m_snap.ev_cell_delta_known;
+        doc["ev_ota"]        = m_snap.ev_ota_update_active;
+        doc["ev_ota_ok"]     = m_snap.ev_ota_status_known;
+
+        // Platform capability flags – allow the web dashboard to hide unsupported sections
+        {
+          PlatformCapabilities caps;
+          if (g_interpreter_mutex != NULL) xSemaphoreTake(g_interpreter_mutex, portMAX_DELAY);
+          caps = active_vehicle_profile.caps;
+          if (g_interpreter_mutex != NULL) xSemaphoreGive(g_interpreter_mutex);
+
+          doc["cap_boost"]     = caps.has_boost;
+          doc["cap_oil"]       = caps.has_oil_temp;
+          doc["cap_gear"]      = caps.has_gear_position;
+          doc["cap_mode"]      = caps.has_drive_mode;
+          doc["cap_odo"]       = caps.has_odometer;
+          doc["cap_indc"]      = caps.has_indicators;
+          doc["cap_lights"]    = caps.has_exterior_lights;
+          doc["cap_cabin"]     = caps.has_interior_lights;
+          doc["cap_rdoors"]    = caps.has_rear_doors;
+          doc["cap_media"]     = caps.has_media_source;
+          doc["cap_phone"]     = caps.has_phone;
+          doc["cap_mmi"]       = caps.has_mmi;
+          doc["cap_acc"]       = caps.has_acc_radar;
+          doc["cap_ambient"]   = caps.has_ambient_rgb;
+          doc["cap_ev"]        = caps.has_ev_battery;
+          doc["cap_charge"]    = caps.has_ev_charging;
+          doc["cap_regen"]     = caps.has_ev_regen;
+          doc["cap_mtemp"]     = caps.has_motor_temp;
+          doc["cap_ota"]       = caps.has_ota_status;
+        }
 
         const size_t payload_bytes = measureJson(doc) + 1; // include null terminator
         if (payload_bytes > sizeof(global_ws_buffer)) {
@@ -2328,6 +2547,70 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
         active_vehicle_profile.electrical_bus = "MLB-INFRASTRUCTURE CAN";
         active_vehicle_profile.network_generation = SERIES_MLB_LONG_CLASS;
     }
+
+    // --- PQ24 / PQ34 / PL45 EARLY GENERATION MAPPINGS (~2001-2005) ---
+    else if (strcmp(chassis, "8L") == 0) {
+        active_vehicle_profile.model_name = "Audi A3 (8L PQ24 Platform)";
+        active_vehicle_profile.electrical_bus = "EARLY CAN PQ24 500k/100k";
+        active_vehicle_profile.network_generation = SERIES_PQ24_PL45;
+    }
+    else if (strcmp(chassis, "8E") == 0 || strcmp(chassis, "8H") == 0) {
+        active_vehicle_profile.model_name = "Audi A4 / S4 / Cabriolet (B6/B7 PQ24)";
+        active_vehicle_profile.electrical_bus = "EARLY CAN PQ24 500k/100k";
+        active_vehicle_profile.network_generation = SERIES_PQ24_PL45;
+    }
+    else if (strcmp(chassis, "1J") == 0) {
+        active_vehicle_profile.model_name = "VW Golf Mk4 / Bora (PQ24)";
+        active_vehicle_profile.electrical_bus = "EARLY CAN PQ24 500k/100k";
+        active_vehicle_profile.network_generation = SERIES_PQ24_PL45;
+    }
+    else if (strcmp(chassis, "9N") == 0) {
+        active_vehicle_profile.model_name = "VW Polo Mk4 / 9N (PQ24 Compact)";
+        active_vehicle_profile.electrical_bus = "EARLY CAN PQ24 COMPACT 500k";
+        active_vehicle_profile.network_generation = SERIES_PQ24_PL45;
+    }
+    else if (strcmp(chassis, "1C") == 0) {
+        active_vehicle_profile.model_name = "VW Bora Saloon (PQ24)";
+        active_vehicle_profile.electrical_bus = "EARLY CAN PQ24 500k/100k";
+        active_vehicle_profile.network_generation = SERIES_PQ24_PL45;
+    }
+
+    // --- MEB ELECTRIC ERA MAPPINGS (~2020-present) ---
+    else if (strcmp(chassis, "E1") == 0) {
+        active_vehicle_profile.model_name = "VW ID.3 (MEB Electric)";
+        active_vehicle_profile.electrical_bus = "MEB CAN-FD / ICAS1 ETHERNET";
+        active_vehicle_profile.network_generation = SERIES_MQB_EVO_MEB;
+    }
+    else if (strcmp(chassis, "E2") == 0) {
+        active_vehicle_profile.model_name = "VW ID.4 / ID.4 GTX (MEB Electric)";
+        active_vehicle_profile.electrical_bus = "MEB CAN-FD / ICAS1 ETHERNET";
+        active_vehicle_profile.network_generation = SERIES_MQB_EVO_MEB;
+    }
+    else if (strcmp(chassis, "E3") == 0) {
+        active_vehicle_profile.model_name = "VW ID.5 / ID.5 GTX (MEB Electric)";
+        active_vehicle_profile.electrical_bus = "MEB CAN-FD / ICAS1 ETHERNET";
+        active_vehicle_profile.network_generation = SERIES_MQB_EVO_MEB;
+    }
+    else if (strcmp(chassis, "E9") == 0 || strcmp(chassis, "EB") == 0) {
+        active_vehicle_profile.model_name = "VW ID.Buzz / ID.Buzz Cargo (MEB Electric)";
+        active_vehicle_profile.electrical_bus = "MEB CAN-FD / ICAS1 ETHERNET";
+        active_vehicle_profile.network_generation = SERIES_MQB_EVO_MEB;
+    }
+    else if (strcmp(chassis, "FZ") == 0) {
+        active_vehicle_profile.model_name = "Audi Q4 e-tron / Q4 Sportback e-tron (MEB)";
+        active_vehicle_profile.electrical_bus = "MEB CAN-FD / ICAS1 ETHERNET";
+        active_vehicle_profile.network_generation = SERIES_MQB_EVO_MEB;
+    }
+    else if (strcmp(chassis, "I1") == 0) {
+        active_vehicle_profile.model_name = "Skoda Enyaq iV (MEB Electric)";
+        active_vehicle_profile.electrical_bus = "MEB CAN-FD / ICAS1 ETHERNET";
+        active_vehicle_profile.network_generation = SERIES_MQB_EVO_MEB;
+    }
+    else if (strcmp(chassis, "K1") == 0) {
+        active_vehicle_profile.model_name = "Cupra Born (MEB Electric)";
+        active_vehicle_profile.electrical_bus = "MEB CAN-FD / ICAS1 ETHERNET";
+        active_vehicle_profile.network_generation = SERIES_MQB_EVO_MEB;
+    }
     else {
         active_vehicle_profile.model_name = "GENERIC MODEL ARCHITECTURE";
         active_vehicle_profile.electrical_bus = "STANDARD INFRASTRUCTURE CAN";
@@ -2349,8 +2632,11 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
     }
 
     // =========================================================================
-    // 4. PRINT METADATA OUTPUT TO THE TERMINAL BUFFER
+    // 4. POPULATE PLATFORM CAPABILITY FLAGS
+    // All UI surfaces, the websocket payload builder, and the simulator use these
+    // flags to show/hide features that do not exist for the selected platform.
     // =========================================================================
+    active_vehicle_profile.caps = getPlatformCapabilities(active_vehicle_profile.network_generation);
     Serial.println("\n=======================================================");
     Serial.println("         DECODED VEHICLE TELEMETRY PROFILE             ");
     Serial.println("=======================================================");
@@ -2441,6 +2727,28 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
         else if (strcmp(chassis, "KJ") == 0)  sys_ctx->interpreter = new SeatIbizaMQBA0Interpreter();
         else                                  sys_ctx->interpreter = new GenericVehicleInterpreter();
         Serial.printf("[DECOUPLER] Dynamic Instance Allocation: Group 4 Compact platform class loaded for chassis %s\n", chassis);
+    }
+    // --- GROUP 5: PQ24 / PQ34 / PL45 EARLY GENERATION CLASS MATRIX ---
+    else if (active_vehicle_profile.network_generation == SERIES_PQ24_PL45) {
+        if (strcmp(chassis, "8L") == 0)       sys_ctx->interpreter = new AudiA38LInterpreter();
+        else if (strcmp(chassis, "8E") == 0 || strcmp(chassis, "8H") == 0) sys_ctx->interpreter = new AudiA4B6Interpreter();
+        else if (strcmp(chassis, "1J") == 0)  sys_ctx->interpreter = new VwGolf4Interpreter();
+        else if (strcmp(chassis, "9N") == 0)  sys_ctx->interpreter = new VwPolo9NInterpreter();
+        else if (strcmp(chassis, "1C") == 0)  sys_ctx->interpreter = new VwBoraInterpreter();
+        else                                  sys_ctx->interpreter = new GenericVehicleInterpreter();
+        Serial.printf("[DECOUPLER] Dynamic Instance Allocation: Group 5 PQ24 Early Gen class loaded for chassis %s\n", chassis);
+    }
+    // --- GROUP 6: MEB ELECTRIC ERA CLASS MATRIX ---
+    else if (active_vehicle_profile.network_generation == SERIES_MQB_EVO_MEB) {
+        if (strcmp(chassis, "E1") == 0)       sys_ctx->interpreter = new VwId3Interpreter();
+        else if (strcmp(chassis, "E2") == 0)  sys_ctx->interpreter = new VwId4Interpreter();
+        else if (strcmp(chassis, "E3") == 0)  sys_ctx->interpreter = new VwId5Interpreter();
+        else if (strcmp(chassis, "E9") == 0 || strcmp(chassis, "EB") == 0) sys_ctx->interpreter = new VwIdBuzzInterpreter();
+        else if (strcmp(chassis, "FZ") == 0)  sys_ctx->interpreter = new AudiQ4EtronInterpreter();
+        else if (strcmp(chassis, "I1") == 0)  sys_ctx->interpreter = new SkodaEnyaqInterpreter();
+        else if (strcmp(chassis, "K1") == 0)  sys_ctx->interpreter = new CupraBorhInterpreter();
+        else                                  sys_ctx->interpreter = new GenericVehicleInterpreter();
+        Serial.printf("[DECOUPLER] Dynamic Instance Allocation: Group 6 MEB Electric class loaded for chassis %s\n", chassis);
     }
     // --- DEFAULT BENCH FALLBACK INTERFACE ---
     else {
