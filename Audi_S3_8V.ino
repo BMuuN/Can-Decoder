@@ -63,7 +63,7 @@ static constexpr uint32_t SERIAL_BAUD_RATE = 921600; // USB CDC virtual port; 92
 // SECURITY: Change AP_PASSWORD_DEFAULT above before deploying to a real vehicle.
 
 // --- THREAD-SAFE FIXED CHAR BUFFER ARRAY ---
-static char global_ws_buffer[2048]; // Expanded from 512 to 2048 bytes to accommodate grouped telemetry expansions
+static char global_ws_buffer[2048]; // Expanded from 512 to 2048 bytes (4× increase) to accommodate grouped telemetry expansions
 // std::atomic<bool> with acquire/release semantics provides the memory-ordering
 // fence needed on RISC-V (ESP32-P4) so the buffer writes are visible to Core 0
 // before it observes the flag as true.  Plain 'volatile' does NOT provide this.
@@ -557,8 +557,11 @@ static void queuePassiveDiagnosticPoll() {
     tx_msg.data_length_code = 8;
     tx_msg.data[0] = 0x02;
     tx_msg.data[1] = 0x01;
-    tx_msg.data[2] = poll_monitor_status ? 0x01 /* PID 0x01: monitor status since DTC clear */
-                                      : 0x42 /* PID 0x42: control module voltage */;
+    if (poll_monitor_status) {
+        tx_msg.data[2] = 0x01; // PID 0x01: monitor status since DTC clear
+    } else {
+        tx_msg.data[2] = 0x42; // PID 0x42: control module voltage
+    }
     for (int i = 3; i < 8; i++) tx_msg.data[i] = 0x00;
 
     if (twai_transmit_v2(twai_ports[0], &tx_msg, 0) == ESP_OK) {
@@ -1235,10 +1238,14 @@ void CockpitCoreProcessor(void *pvParameters) {
 
         const size_t payload_bytes = measureJson(doc) + 1; // include null terminator
         if (payload_bytes > sizeof(global_ws_buffer)) {
-          snprintf(global_ws_buffer, sizeof(global_ws_buffer),
+          const int written = snprintf(global_ws_buffer, sizeof(global_ws_buffer),
             "{\"ok\":false,\"msg\":\"Telemetry payload (%u bytes) exceeded buffer capacity (%u bytes)\"}",
             (unsigned)payload_bytes,
             (unsigned)sizeof(global_ws_buffer));
+          if (written < 0 || (size_t)written >= sizeof(global_ws_buffer)) {
+            strncpy(global_ws_buffer, "{\"ok\":false,\"msg\":\"Telemetry payload exceeded websocket buffer\"}", sizeof(global_ws_buffer));
+            global_ws_buffer[sizeof(global_ws_buffer) - 1] = '\0';
+          }
         } else {
           serializeJson(doc, global_ws_buffer, sizeof(global_ws_buffer));
         }
