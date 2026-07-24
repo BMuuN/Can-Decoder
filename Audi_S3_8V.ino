@@ -134,6 +134,12 @@ static lv_obj_t *g_pwd_modal = nullptr;
 static lv_obj_t *g_pwd_textarea = nullptr;
 static lv_obj_t *g_pwd_keyboard = nullptr;
 
+#if _WIFI_ACTIVE
+void startWifiHotspot();
+void stopWifiHotspot();
+extern const char index_html[] PROGMEM;
+#endif
+
 // --- BENCH FULLTEST VIN SWEEP CONFIGURATION ---
 struct BenchVinSignature {
     const char* wmi;
@@ -892,10 +898,6 @@ bool applyAndPersistApPassword(const char* password, const char* source);
 void processQueuedPasswordChange();
 void showPasswordEditorOverlay();
 void closePasswordEditorOverlay();
-#if _WIFI_ACTIVE
-void startWifiHotspot();
-void stopWifiHotspot();
-#endif
 
 // --- DISPLAY BUFFER BLOCK ALLOCATION FOR LVGL ---
 // #define DISP_HOR_RES 800  // Set this to your specific Waveshare screen width
