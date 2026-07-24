@@ -63,7 +63,7 @@ static constexpr uint32_t SERIAL_BAUD_RATE = 921600; // USB CDC virtual port; 92
 // SECURITY: Change AP_PASSWORD_DEFAULT above before deploying to a real vehicle.
 
 // --- THREAD-SAFE FIXED CHAR BUFFER ARRAY ---
-static char global_ws_buffer[2048]; // Expanded from 512 to 2048 bytes (4× increase) to accommodate grouped telemetry expansions
+static char global_ws_buffer[2048]; // Expanded from 512 to 2048 bytes to accommodate grouped telemetry expansions
 // std::atomic<bool> with acquire/release semantics provides the memory-ordering
 // fence needed on RISC-V (ESP32-P4) so the buffer writes are visible to Core 0
 // before it observes the flag as true.  Plain 'volatile' does NOT provide this.
@@ -1669,7 +1669,7 @@ static void formatDiagnosticResponseLabel(const LiveTelemetryMetrics& m, char* o
 }
 
 void updateUIElements() {
-  char buf[96];
+  char buf[96]; // Largest 3-line throttle/gear/mode summary stays well under this bound.
 
   // C-4: Snapshot the entire metrics struct under the spinlock so we never
   //      observe a torn value from Core 0's runBenchTelemetrySimulation.
