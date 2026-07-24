@@ -1,5 +1,25 @@
 #include "VehicleInterpreters.h"
 
+static constexpr BoolSignalMapping kMlbComfortSignalMappings[] = {
+    {0x470, 0, 0x01, &LiveTelemetryMetrics::left_indicator_active,  &LiveTelemetryMetrics::left_indicator_known},
+    {0x470, 0, 0x02, &LiveTelemetryMetrics::right_indicator_active, &LiveTelemetryMetrics::right_indicator_known},
+    {0x470, 0, 0x04, &LiveTelemetryMetrics::parking_lights_active,  &LiveTelemetryMetrics::parking_lights_known},
+    {0x470, 0, 0x08, &LiveTelemetryMetrics::low_beam_active,        &LiveTelemetryMetrics::low_beam_known},
+    {0x470, 0, 0x10, &LiveTelemetryMetrics::high_beam_active,       &LiveTelemetryMetrics::high_beam_known},
+    {0x470, 0, 0x20, &LiveTelemetryMetrics::interior_lights_active, &LiveTelemetryMetrics::interior_lights_known},
+};
+
+static constexpr ByteSignalMapping kMlbInfotainmentMappings[] = {
+    {0x6C1, 0, 0xFF, 0, &LiveTelemetryMetrics::infotainment_source_code, &LiveTelemetryMetrics::infotainment_source_known},
+    {0x6C1, 1, 0xFF, 0, &LiveTelemetryMetrics::infotainment_track,       &LiveTelemetryMetrics::infotainment_track_known},
+};
+
+static constexpr BoolSignalMapping kMlbInfotainmentStateMappings[] = {
+    {0x6C1, 2, 0x01, &LiveTelemetryMetrics::phone_call_active, &LiveTelemetryMetrics::phone_call_known},
+};
+
+static constexpr OdometerSignalMapping kMlbOdometerMapping = {0x5A0, 0, 4, 0.1f, true};
+
 // =========================================================================
 //  UNIFIED MLB DECODING CORE (USED BY ALL LONGITUDINAL CARS)
 // =========================================================================
@@ -13,7 +33,7 @@ static void parseStandardMlbFrame(twai_message_t &msg) {
             if (msg.data_length_code < 2) break;
             uint16_t low_byte  = (uint16_t)(*(msg.data + 0));
             uint16_t high_byte = (uint16_t)(*(msg.data + 1));
-            sys_ctx->metrics.engine_rpm = ((high_byte << 8) | low_byte) * 0.25; 
+            sys_ctx->metrics.engine_rpm = ((high_byte << 8) | low_byte) * 0.25;
             break;
         }
         case 0x1A4: { // MLB Drivetrain Thermal Indicators
@@ -51,6 +71,10 @@ static void parseStandardMlbFrame(twai_message_t &msg) {
             break;
         }
     }
+
+    applyGenericGearFrame(msg, 0x540, 0, 1, 0x01);
+    applyOdometerSignalMapping(msg, kMlbOdometerMapping);
+    parsePassiveDiagnosticsFrame(msg);
 }
 
 static void parseStandardMlbComfort(twai_message_t &msg) {
@@ -73,6 +97,13 @@ static void parseStandardMlbComfort(twai_message_t &msg) {
         if (msg.data_length_code < 1) return;
         sys_ctx->metrics.handbrake_active = (*(msg.data + 0) & 0x10) != 0;
     }
+
+    applyBoolSignalMappings(msg, kMlbComfortSignalMappings, sizeof(kMlbComfortSignalMappings) / sizeof(kMlbComfortSignalMappings[0]));
+}
+
+static void parseStandardMlbInfotainment(twai_message_t &msg) {
+    applyByteSignalMappings(msg, kMlbInfotainmentMappings, sizeof(kMlbInfotainmentMappings) / sizeof(kMlbInfotainmentMappings[0]));
+    applyBoolSignalMappings(msg, kMlbInfotainmentStateMappings, sizeof(kMlbInfotainmentStateMappings) / sizeof(kMlbInfotainmentStateMappings[0]));
 }
 
 // =========================================================================
@@ -82,7 +113,7 @@ static void parseStandardMlbComfort(twai_message_t &msg) {
 // --- 1. AUDI A4 MLB 8K ---
 void AudiA4MLB8KInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiA4MLB8KInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiA4MLB8KInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA4MLB8KInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiA4MLB8KInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -92,7 +123,7 @@ void AudiA4MLB8KInterpreter::configureUiLimits() {
 // --- 2. AUDI A4 MLB 8W ---
 void AudiA4MLB8WInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiA4MLB8WInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiA4MLB8WInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA4MLB8WInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiA4MLB8WInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(220, 0, 0); // Bold Digital Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 8000);
@@ -102,7 +133,7 @@ void AudiA4MLB8WInterpreter::configureUiLimits() {
 // --- 3. AUDI A6 MLB C7 ---
 void AudiA6MLBC7Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiA6MLBC7Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiA6MLBC7Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA6MLBC7Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiA6MLBC7Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(200, 30, 0); // C7 Amber/Red mix
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -112,7 +143,7 @@ void AudiA6MLBC7Interpreter::configureUiLimits() {
 // --- 4. AUDI A6 MLB C8 ---
 void AudiA6MLBC8Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiA6MLBC8Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiA6MLBC8Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA6MLBC8Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiA6MLBC8Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 8000);
@@ -122,7 +153,7 @@ void AudiA6MLBC8Interpreter::configureUiLimits() {
 // --- 5. AUDI A5 MLB B8 ---
 void AudiA5MLBB8Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiA5MLBB8Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiA5MLBB8Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA5MLBB8Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiA5MLBB8Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7500);
@@ -132,7 +163,7 @@ void AudiA5MLBB8Interpreter::configureUiLimits() {
 // --- 6. AUDI A8 MLB D4 ---
 void AudiA8MLBD4Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiA8MLBD4Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiA8MLBD4Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA8MLBD4Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiA8MLBD4Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(240, 240, 240); // Luxury White Dashboard
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -142,7 +173,7 @@ void AudiA8MLBD4Interpreter::configureUiLimits() {
 // --- 7. AUDI A8 MLB D5 ---
 void AudiA8MLBD5Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiA8MLBD5Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiA8MLBD5Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiA8MLBD5Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiA8MLBD5Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(255, 255, 255); // Clean White Matrix
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -152,7 +183,7 @@ void AudiA8MLBD5Interpreter::configureUiLimits() {
 // --- 8. AUDI Q5 MLB 8R ---
 void AudiQ5MLB8RInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiQ5MLB8RInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiQ5MLB8RInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiQ5MLB8RInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiQ5MLB8RInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -162,7 +193,7 @@ void AudiQ5MLB8RInterpreter::configureUiLimits() {
 // --- 9. AUDI Q5 MLB FY ---
 void AudiQ5MLBFYInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiQ5MLBFYInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiQ5MLBFYInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiQ5MLBFYInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiQ5MLBFYInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7000);
@@ -172,7 +203,7 @@ void AudiQ5MLBFYInterpreter::configureUiLimits() {
 // --- 10. AUDI Q7 MLB 4M ---
 void AudiQ7MLB4MInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void AudiQ7MLB4MInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void AudiQ7MLB4MInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void AudiQ7MLB4MInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void AudiQ7MLB4MInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(180, 0, 0); // Audi Red
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -182,7 +213,7 @@ void AudiQ7MLB4MInterpreter::configureUiLimits() {
 // --- 11. PORSCHE CAYENNE 92 ---
 void PorscheCayenne92Interpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void PorscheCayenne92Interpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void PorscheCayenne92Interpreter::interpretInfotainment(twai_message_t &msg) {}
+void PorscheCayenne92Interpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void PorscheCayenne92Interpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(255, 200, 0); // Sporty Porsche Yellow/Amber accent
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 6500);
@@ -192,7 +223,7 @@ void PorscheCayenne92Interpreter::configureUiLimits() {
 // --- 12. PORSCHE MACAN 9B ---
 void PorscheMacan9BInterpreter::interpretDriveTrain(twai_message_t &msg) { parseStandardMlbFrame(msg); }
 void PorscheMacan9BInterpreter::interpretComfort(twai_message_t &msg)    { parseStandardMlbComfort(msg); }
-void PorscheMacan9BInterpreter::interpretInfotainment(twai_message_t &msg) {}
+void PorscheMacan9BInterpreter::interpretInfotainment(twai_message_t &msg) { parseStandardMlbInfotainment(msg); }
 void PorscheMacan9BInterpreter::configureUiLimits() {
     sys_ctx->normal_green = lv_color_make(255, 200, 0); // Porsche Sport Amber
     if (sys_ctx->rpm_meter != nullptr) lv_arc_set_range(sys_ctx->rpm_meter, 0, 7500);
