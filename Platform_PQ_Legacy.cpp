@@ -1,4 +1,5 @@
 #include "VehicleInterpreters.h"
+#include "FuelProfiles.h"
 
 static constexpr BoolSignalMapping kPqComfortSignalMappings[] = {
     {0x470, 0, 0x01, &LiveTelemetryMetrics::left_indicator_active,  &LiveTelemetryMetrics::left_indicator_known},
@@ -61,6 +62,25 @@ static void parseStandardPqFrame(twai_message_t &msg) {
             if (msg.data_length_code < 1) break;
             float pct = *(msg.data + 0) * 0.4f;
             sys_ctx->metrics.throttle_pct = (pct > 100.0f) ? 100.0f : pct;
+            break;
+        }
+        case 0x2C0: { // PQ35/46 Instrument Cluster gauge broadcast — fuel level
+            // Byte 2 carries fuel remaining in direct litres (1 LSB = 1 L).
+            // Confidence: MEDIUM — confirmed on Golf Mk5/Mk6; byte position may
+            // differ on Passat B6 variants.  Plausibility filter rejects jumps.
+            if (msg.data_length_code < 3) break;
+            const float raw_liters = (float)msg.data[2];
+            applyFuelPlausibility(sys_ctx, raw_liters);
+            break;
+        }
+        case 0x621: { // PQ35 alternate comfort-bus fuel broadcast
+            // Some PQ35 comfort-bus configurations use 0x621 byte 2 for fuel level.
+            // Only accepted if no fresher reading from 0x2C0 is present.
+            if (msg.data_length_code < 3) break;
+            if (sys_ctx->metrics.fuel_level_known &&
+                (millis() - sys_ctx->metrics.fuel_timestamp_ms) < 500) break;
+            const float raw_liters = (float)msg.data[2];
+            applyFuelPlausibility(sys_ctx, raw_liters);
             break;
         }
     }

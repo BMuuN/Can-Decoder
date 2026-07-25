@@ -54,6 +54,8 @@ struct PlatformCapabilities {
     // ADAS / advanced
     bool has_acc_radar      = false; // Adaptive cruise / radar target vectors
     bool has_ambient_rgb    = false; // Interior RGB ambient lighting value
+    // Fuel level
+    bool has_fuel_level     = false; // Fuel remaining (litres and/or percent)
     // EV / MEB specific
     bool has_ev_battery     = false; // HV SoC %, cell voltage, pack voltage
     bool has_ev_charging    = false; // Charging power / status
@@ -145,6 +147,12 @@ struct LiveTelemetryMetrics {
     uint8_t last_diag_pid = 0x00;
     uint16_t last_diag_source = 0x000;
     uint32_t diag_response_counter = 0;
+
+    // --- FUEL LEVEL FIELDS (passive CAN sniff or UDS; -1.0 = unavailable) ---
+    float   fuel_liters         = -1.0f; // Fuel remaining in litres (-1 = unknown)
+    float   fuel_percent        = -1.0f; // Tank fill percentage (-1 = unknown)
+    bool    fuel_level_known    = false;
+    uint32_t fuel_timestamp_ms  = 0;     // millis() of last valid fuel update
 
     // --- EV / MEB SPECIFIC FIELDS (zero/false = unavailable on ICE platforms) ---
     float   ev_soc_pct              = 0.0f;  // High-voltage battery state of charge (%)

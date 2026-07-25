@@ -101,6 +101,7 @@ lv_obj_t *label_infotainment;
 // --- EXTENDED UI LABEL POINTERS (new telemetry panels) ---
 lv_obj_t *lbl_speed_val;
 lv_obj_t *lbl_throttle_val;
+lv_obj_t *lbl_fuel_val;
 lv_obj_t *lbl_comfort_climate;
 lv_obj_t *lbl_infomt_detail;
 lv_obj_t *lbl_diag;
@@ -129,6 +130,11 @@ static bool g_serial_waiting_for_password = false;
 portMUX_TYPE g_ap_password_queue_mux = portMUX_INITIALIZER_UNLOCKED;
 static char g_pending_ap_password[64] = {0};
 static bool g_pending_ap_password_ready = false;
+
+// --- SPEED UNITS PREFERENCE ---
+// 0 = km/h (default), 1 = mph.  Persisted in NVS key "can-decoder/spd_unit".
+static uint8_t g_speed_units = 0;
+static lv_obj_t *g_units_btn = nullptr;  // Toggle button on the Performance tab
 
 static lv_obj_t *g_pwd_modal = nullptr;
 static lv_obj_t *g_pwd_textarea = nullptr;
@@ -430,6 +436,23 @@ bool queueApPasswordUpdate(const char* password) {
     return true;
 }
 
+// --- SPEED UNITS NVS HELPERS ---
+void saveSpeedUnitsToNvs() {
+    Preferences prefs;
+    if (!prefs.begin("can-decoder", false)) return;
+    prefs.putUChar("spd_unit", g_speed_units);
+    prefs.end();
+}
+
+void loadSpeedUnitsFromNvs() {
+    Preferences prefs;
+    if (!prefs.begin("can-decoder", true)) return;
+    g_speed_units = prefs.getUChar("spd_unit", 0);  // 0 = km/h
+    prefs.end();
+    if (g_speed_units > 1) g_speed_units = 0;  // Sanitise; valid values: 0 or 1
+    Serial.printf("[UNITS] Speed units loaded from NVS: %s\n", g_speed_units == 1 ? "mph" : "km/h");
+}
+
 bool applyAndPersistApPassword(const char* password, const char* source) {
     const char* validation_error = validateApPassword(password);
     if (validation_error != nullptr) {
@@ -716,6 +739,7 @@ const char index_html[] PROGMEM = R"rawhtml(
     <button onclick="showTab('info',this)">INFOTAINMENT</button>
     <button id="nav_battery" class="cap-hidden" onclick="showTab('battery',this)">BATTERY</button>
     <button onclick="showTab('diag',this)">DIAGNOSTIC</button>
+    <button id="units_btn" onclick="toggleUnits()" style="margin-left:auto">KM/H</button>
 </nav>
 
 <!-- TAB 1: PERFORMANCE -->
@@ -729,7 +753,7 @@ const char index_html[] PROGMEM = R"rawhtml(
     <div class="card">
         <div class="lbl">Vehicle Speed</div>
         <div id="spd" class="val white">0</div>
-        <div class="unit">km/h</div>
+        <div class="unit" id="spd_unit">km/h</div>
     </div>
     <div id="boost_card" class="card">
         <div class="lbl">Turbo Boost</div>
@@ -765,6 +789,11 @@ const char index_html[] PROGMEM = R"rawhtml(
         <div class="lbl">Odometer</div>
         <div id="odo" class="val white" style="font-size:1.4em">UNAVAILABLE</div>
         <div class="unit">km</div>
+    </div>
+    <div id="fuel_card" class="card cap-hidden">
+        <div class="lbl">Fuel Level</div>
+        <div id="fuel_l" class="val green">--</div>
+        <div class="unit">L&nbsp;&nbsp;<span id="fuel_pct" style="color:#aaa">--%</span></div>
     </div>
     <div id="ev_regen_card" class="card cap-hidden">
         <div class="lbl">Regen Torque</div>
@@ -918,7 +947,19 @@ const char index_html[] PROGMEM = R"rawhtml(
 var gw = `ws://${window.location.hostname}/ws`;
 var ws;
 var gCapEv = false;
+var gSpeedUnits = 0;  // 0 = km/h, 1 = mph (mirrors server preference)
 window.addEventListener('load', connect);
+
+function toggleUnits() {
+    // Optimistically flip the local state and notify the server.
+    gSpeedUnits = gSpeedUnits === 0 ? 1 : 0;
+    var label = gSpeedUnits === 1 ? 'MPH' : 'KM/H';
+    document.getElementById('units_btn').textContent = label;
+    document.getElementById('spd_unit').textContent  = gSpeedUnits === 1 ? 'mph' : 'km/h';
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(gSpeedUnits === 1 ? 'SET_UNITS_MPH' : 'SET_UNITS_KMH');
+    }
+}
 
 function connect() {
     ws = new WebSocket(gw);
@@ -983,6 +1024,7 @@ function applyCaps(d) {
     var hasPhone  = d.cap_phone  === true;
     var hasMmi    = d.cap_mmi    === true;
     var hasRegen  = d.cap_regen  === true;
+    var hasFuel   = d.cap_fuel   === true;
     var hasOta    = d.cap_ota    === true;
 
     // PERFORMANCE tab visibility
@@ -991,6 +1033,7 @@ function applyCaps(d) {
     capShow('gear_card',    hasGear);
     capShow('mode_card',    hasMode);
     capShow('odo_card',     hasOdo);
+    capShow('fuel_card',    hasFuel);
     capShow('ev_regen_card', hasRegen);
 
     // Update RPM/speed label for EV
@@ -1034,13 +1077,22 @@ function update(d) {
     // Apply platform capability gating when flags are present
     if (d.cap_ev !== undefined) applyCaps(d);
 
+    // Sync speed units from server if changed remotely (e.g. via serial command)
+    if (d.units !== undefined && d.units !== gSpeedUnits) {
+        gSpeedUnits = d.units;
+        document.getElementById('units_btn').textContent = gSpeedUnits === 1 ? 'MPH' : 'KM/H';
+        document.getElementById('spd_unit').textContent  = gSpeedUnits === 1 ? 'mph' : 'km/h';
+    }
+
     // Performance
     var rpm = d.rpm||0;
     var rpmEl = document.getElementById('rpm');
     rpmEl.textContent = rpm.toFixed(0);
     rpmEl.className = 'val ' + (rpm >= 6500 ? 'red blink' : 'green');
 
-    document.getElementById('spd').textContent   = (d.spd||0).toFixed(1);
+    var rawSpd = d.spd||0;
+    var dispSpd = gSpeedUnits === 1 ? rawSpd * 0.621371 : rawSpd;
+    document.getElementById('spd').textContent   = dispSpd.toFixed(1);
     document.getElementById('thr').textContent   = (d.thr||0).toFixed(0);
 
     var bEl = document.getElementById('boost');
@@ -1067,6 +1119,21 @@ function update(d) {
     var odoEl = document.getElementById('odo');
     odoEl.textContent = d.odo_ok ? (d.odo||0).toFixed(1) : 'UNAVAILABLE';
     odoEl.className = 'val ' + (d.odo_ok ? 'white' : 'blue');
+
+    // Fuel level
+    if (d.fuel_ok !== undefined) {
+        var fuelLEl = document.getElementById('fuel_l');
+        var fuelPEl = document.getElementById('fuel_pct');
+        if (d.fuel_ok && (d.fuel_l||0) >= 0) {
+            fuelLEl.textContent = (d.fuel_l||0).toFixed(1);
+            fuelLEl.className = 'val ' + ((d.fuel_l||0) < 10 ? 'red blink' : (d.fuel_l||0) < 20 ? 'amber' : 'green');
+            fuelPEl.textContent = (d.fuel_pct||0) >= 0 ? (d.fuel_pct||0).toFixed(0) + '%' : '';
+        } else {
+            fuelLEl.textContent = '--';
+            fuelLEl.className = 'val blue';
+            fuelPEl.textContent = '--%';
+        }
+    }
 
     // Regen torque (EV)
     if (d.ev_regen_ok) {
@@ -1245,6 +1312,8 @@ bool applyAndPersistApPassword(const char* password, const char* source);
 void processQueuedPasswordChange();
 void showPasswordEditorOverlay();
 void closePasswordEditorOverlay();
+void saveSpeedUnitsToNvs();
+void loadSpeedUnitsFromNvs();
 static void formatGearLabel(const LiveTelemetryMetrics& m, char* out, size_t out_size);
 
 // --- DISPLAY BUFFER BLOCK ALLOCATION FOR LVGL ---
@@ -1452,6 +1521,14 @@ void CockpitCoreProcessor(void *pvParameters) {
         doc["ev_ota"]        = m_snap.ev_ota_update_active;
         doc["ev_ota_ok"]     = m_snap.ev_ota_status_known;
 
+        // Fuel level fields
+        doc["fuel_l"]     = m_snap.fuel_level_known ? m_snap.fuel_liters   : -1.0f;
+        doc["fuel_pct"]   = m_snap.fuel_level_known ? m_snap.fuel_percent  : -1.0f;
+        doc["fuel_ok"]    = m_snap.fuel_level_known;
+
+        // Speed units preference (0 = km/h, 1 = mph)
+        doc["units"]      = (uint8_t)g_speed_units;
+
         // Platform capability flags – allow the web dashboard to hide unsupported sections
         {
           PlatformCapabilities caps;
@@ -1473,6 +1550,7 @@ void CockpitCoreProcessor(void *pvParameters) {
           doc["cap_mmi"]       = caps.has_mmi;
           doc["cap_acc"]       = caps.has_acc_radar;
           doc["cap_ambient"]   = caps.has_ambient_rgb;
+          doc["cap_fuel"]      = caps.has_fuel_level;
           doc["cap_ev"]        = caps.has_ev_battery;
           doc["cap_charge"]    = caps.has_ev_charging;
           doc["cap_regen"]     = caps.has_ev_regen;
@@ -1604,6 +1682,7 @@ void setup() {
 #else
   Serial.println("[SYSTEM] Wi-Fi hotspot disabled: WIFI_HOTSPOT_ENABLED=0 set at compile time.");
 #endif
+  loadSpeedUnitsFromNvs();
 
 
   // 3. GRAPHICS DISPLAY & TOUCH ENVIRONMENT ENVIRONMENT BINDING
@@ -1716,6 +1795,30 @@ void loop() {
 #else
         Serial.println("[WIFI] Wi-Fi disabled at compile time.");
 #endif
+    } else if (testVin.equalsIgnoreCase("get units")) {
+        Serial.printf("[UNITS] Speed units: %s\n", g_speed_units == 1 ? "mph" : "km/h");
+    } else if (testVin.equalsIgnoreCase("set units kmh") || testVin.equalsIgnoreCase("set units km/h")) {
+        g_speed_units = 0;
+        saveSpeedUnitsToNvs();
+        Serial.println("[UNITS] Speed units set to km/h (saved to NVS).");
+    } else if (testVin.equalsIgnoreCase("set units mph")) {
+        g_speed_units = 1;
+        saveSpeedUnitsToNvs();
+        Serial.println("[UNITS] Speed units set to mph (saved to NVS).");
+    } else if (testVin.equalsIgnoreCase("get fuel")) {
+        portENTER_CRITICAL(&g_metrics_mux);
+        const float fl = sys_ctx ? sys_ctx->metrics.fuel_liters    : -1.0f;
+        const float fp = sys_ctx ? sys_ctx->metrics.fuel_percent   : -1.0f;
+        const bool  fk = sys_ctx ? sys_ctx->metrics.fuel_level_known : false;
+        portEXIT_CRITICAL(&g_metrics_mux);
+        if (fk && fl >= 0.0f) {
+            if (fp >= 0.0f)
+                Serial.printf("[FUEL] %.1f L  (%.1f%%)\n", fl, fp);
+            else
+                Serial.printf("[FUEL] %.1f L\n", fl);
+        } else {
+            Serial.println("[FUEL] UNAVAILABLE — no fuel frame decoded yet.");
+        }
     } else if (testVin.length() == 17) {
         g_fulltest_active = false; // Manual single-VIN injection cancels any running full test sweep.
         Serial.println("\n[DEBUG] Injecting Bench Test VIN into Profile Matrix...");
@@ -1723,7 +1826,7 @@ void loop() {
         applyUiProfileForCurrentInterpreter();
         Serial.println("[DEBUG] UI morphing execution complete.");
     } else {
-        Serial.println("[DEBUG] Invalid input. Enter a 17-char VIN, 'fulltest', 'stoptest', 'comforttest', 'wifi on', 'wifi off', or 'setpass'.");
+        Serial.println("[DEBUG] Invalid input. Enter a 17-char VIN, 'fulltest', 'stoptest', 'comforttest', 'wifi on', 'wifi off', 'setpass', 'set units kmh', 'set units mph', 'get units', or 'get fuel'.");
     }
   }
 
@@ -1835,6 +1938,30 @@ void buildCockpitUI() {
   lbl_throttle_val = lv_label_create(t1);
   lv_obj_align(lbl_throttle_val, LV_ALIGN_CENTER, -90, 65);
   lv_obj_set_style_text_color(lbl_throttle_val, lv_color_white(), 0);
+
+  // Fuel level readout (below throttle)
+  lbl_fuel_val = lv_label_create(t1);
+  lv_obj_align(lbl_fuel_val, LV_ALIGN_CENTER, -90, 100);
+  lv_obj_set_style_text_color(lbl_fuel_val, lv_color_white(), 0);
+  lv_label_set_text(lbl_fuel_val, "FUEL: UNAVAILABLE");
+
+  // Units toggle button (km/h ↔ mph) — bottom-left of Performance tab
+  g_units_btn = lv_btn_create(t1);
+  lv_obj_set_size(g_units_btn, 100, 36);
+  lv_obj_align(g_units_btn, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+  lv_obj_add_event_cb(g_units_btn, [](lv_event_t* e) {
+      // Toggle the units preference and persist to NVS.
+      // NOTE: This callback runs on Core 1 (cockpit task), so g_speed_units
+      // is safe to write without a mutex (only Core 1 reads/writes it during
+      // normal operation; Core 0 only reads it inside loop() after setup()).
+      g_speed_units = (g_speed_units == 0) ? 1 : 0;
+      saveSpeedUnitsToNvs();
+      lv_obj_t* lbl = lv_obj_get_child(e->target, 0);
+      if (lbl) lv_label_set_text(lbl, g_speed_units == 1 ? "MPH" : "KM/H");
+  }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t* units_lbl = lv_label_create(g_units_btn);
+  lv_label_set_text(units_lbl, g_speed_units == 1 ? "MPH" : "KM/H");
+  lv_obj_center(units_lbl);
 
   // Add Interactive Touch Handler Reset Hook for Peak Value
   lv_obj_add_flag(sys_ctx->boost_meter, LV_OBJ_FLAG_CLICKABLE);
@@ -1975,10 +2102,14 @@ void updateUIElements() {
   // 4. Speed and throttle readouts (Tab 1)
   char gear_buf[24];
   formatGearLabel(m, gear_buf, sizeof(gear_buf));
-  if (m.odometer_valid) {
-    snprintf(buf, sizeof(buf), "SPD: %.1f km/h\nODO: %.1f km", m.vehicle_speed, m.odometer_km);
-  } else {
-    snprintf(buf, sizeof(buf), "SPD: %.1f km/h\nODO: UNAVAILABLE", m.vehicle_speed);
+  {
+    const float disp_speed = (g_speed_units == 1) ? m.vehicle_speed * 0.621371f : m.vehicle_speed;
+    const char* unit_label = (g_speed_units == 1) ? "mph" : "km/h";
+    if (m.odometer_valid) {
+      snprintf(buf, sizeof(buf), "SPD: %.1f %s\nODO: %.1f km", disp_speed, unit_label, m.odometer_km);
+    } else {
+      snprintf(buf, sizeof(buf), "SPD: %.1f %s\nODO: UNAVAILABLE", disp_speed, unit_label);
+    }
   }
   lv_label_set_text(lbl_speed_val, buf);
 
@@ -1987,6 +2118,20 @@ void updateUIElements() {
     gear_buf,
     availabilityLabel(m.sport_mode_known, m.sport_mode_active, "SPORT", "NORMAL"));
   lv_label_set_text(lbl_throttle_val, buf);
+
+  // Fuel level readout
+  if (lbl_fuel_val != nullptr) {
+    if (m.fuel_level_known && m.fuel_liters >= 0.0f) {
+      if (m.fuel_percent >= 0.0f) {
+        snprintf(buf, sizeof(buf), "FUEL: %.1f L (%.0f%%)", m.fuel_liters, m.fuel_percent);
+      } else {
+        snprintf(buf, sizeof(buf), "FUEL: %.1f L", m.fuel_liters);
+      }
+    } else {
+      snprintf(buf, sizeof(buf), "FUEL: UNAVAILABLE");
+    }
+    lv_label_set_text(lbl_fuel_val, buf);
+  }
 
   // 5. Comfort tab — doors, indicators, lights, handbrake and climate (Tab 2)
   char comfort_buf[256];
@@ -2130,6 +2275,14 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         sys_ctx->metrics.peak_boost_bar = 0.0;
         portEXIT_CRITICAL(&g_metrics_mux);
         Serial.println("[WEB EVENT] Peak Turbo metrics zeroed out via remote command.");
+      } else if (strcmp(cmd, "SET_UNITS_MPH") == 0) {
+        g_speed_units = 1;
+        saveSpeedUnitsToNvs();
+        Serial.println("[WEB EVENT] Speed units set to mph via web UI.");
+      } else if (strcmp(cmd, "SET_UNITS_KMH") == 0) {
+        g_speed_units = 0;
+        saveSpeedUnitsToNvs();
+        Serial.println("[WEB EVENT] Speed units set to km/h via web UI.");
       } else if (strncmp(cmd, "SET_AP_PASSWORD ", 16) == 0) {
         const char* candidate = cmd + 16;
         if (queueApPasswordUpdate(candidate)) {

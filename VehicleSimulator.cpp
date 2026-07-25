@@ -1,4 +1,5 @@
 #include "VehicleSimulator.h"
+#include <math.h>
 
 // =========================================================================
 //  CLASS METHOD DEFINITIONS: PLATFORM-AWARE TELEMETRY SIMULATOR CORE
@@ -33,6 +34,11 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
     const bool  ev_charging_act = is_meb && ev_charging_kw > 0.0f;
     const float ev_regen_torque = is_meb ? -(throttle_pct > 5.0f ? 0.0f : 80.0f)   : 0.0f; // Regen when not accelerating
     const float ev_motor_temp   = is_meb ? (40.0f + (target_rpm / 5500.0f) * 50.0f): 0.0f; // 40-90°C range
+
+    // Fuel bench simulation: oscillate between 35 L and 45 L over a slow cycle.
+    // MEB has no fuel tank so the field is left unknown for that platform.
+    const bool has_fuel = !is_meb && (gen != SERIES_PQ24_PL45);
+    const float fuel_bench_liters = has_fuel ? (40.0f + 5.0f * sinf((float)bench_tick * 0.002f)) : -1.0f;
 
     // C-4: Protect the metrics write with the spinlock so Core 1's
     //      updateUIElements/parsers never observe a partially-written struct.
@@ -103,6 +109,11 @@ void runBenchTelemetrySimulation(float target_rpm, float target_boost, float tar
     sys_ctx->metrics.ev_cell_delta_known  = is_meb;
     sys_ctx->metrics.ev_ota_update_active = false;
     sys_ctx->metrics.ev_ota_status_known  = is_meb;
+    // Fuel level bench simulation
+    sys_ctx->metrics.fuel_liters       = fuel_bench_liters;
+    sys_ctx->metrics.fuel_percent      = has_fuel ? (fuel_bench_liters / 55.0f * 100.0f) : -1.0f;
+    sys_ctx->metrics.fuel_level_known  = has_fuel;
+    sys_ctx->metrics.fuel_timestamp_ms = has_fuel ? (uint32_t)millis() : 0;
     portEXIT_CRITICAL(&g_metrics_mux);
 
     // 2. Safely process hardware frame simulation ONLY if a real vehicle network is locked!
