@@ -11,6 +11,19 @@
 #endif
 #include <esp_heap_caps.h>  // PSRAM-aware heap allocation (heap_caps_malloc)
 
+#include <Wire.h>
+#include <TAMC_GT911.h>
+
+// Dedicated MIPI DSI internal I2C lanes on the ESP32-P4-Module-DEV-KIT
+#define TOUCH_SDA  7   
+#define TOUCH_SCL  8   
+#define TOUCH_INT  11
+#define TOUCH_RST  12
+
+static bool g_touch_online = false;
+// Instantiate the panel using the exact 720x1280 native resolution markers
+TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 720, 1280);
+
 // --- WI-FI HOTSPOT CAPABILITY SELECTION ---
 // On boards where SOC_WIFI_SUPPORTED is 0 but an on-board Wi-Fi module is
 // present (e.g. Waveshare ESP32-P4-NANO with companion ESP32-C6), uncomment
@@ -1343,23 +1356,24 @@ static lv_indev_drv_t indev_drv;
 
 // Non-blocking callback: Reads the GT911 hardware over I2C and swaps axes for landscape
 void landscape_touch_read_cb(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
-    // 1. Replace this section with your specific GT911 hardware check logic
-    // Example pseudocode signature: if (gt911.isTouched()) { ... }
-    bool touch_hardware_active = false;
+    if (!g_touch_online) {
+        data->state = LV_INDEV_STATE_REL; // Guard: run safely headlessly
+        return;
+    }
 
-    if (touch_hardware_active) {
-        // Read raw portrait hardware registers directly from the chip
-        int raw_portrait_x = 0; // Read raw hardware X
-        int raw_portrait_y = 0; // Read raw hardware Y
+    tp.read(); 
+    if (tp.isTouched) {
+        // FIXED: Extract only the primary touch point data from the point tracking array
+        TP_Point p = tp.points[0]; 
+        int raw_portrait_x = p.x; 
+        int raw_portrait_y = p.y; 
 
-        // 2. MATHEMATICAL TRANSFORMATION MATRIX FOR 90-DEGREE ROTATION
-        // Swap the axes and mirror the horizontal scale to convert Portrait to Landscape
+        // Your 90-degree transformation matrix converts everything perfectly
         data->point.x = raw_portrait_y;
         data->point.y = 720 - 1 - raw_portrait_x;
-
-        data->state = LV_INDEV_STATE_PR; // Set state to "Pressed"
+        data->state = LV_INDEV_STATE_PR;   // Tell LVGL a click is "Pressed"
     } else {
-        data->state = LV_INDEV_STATE_REL; // Set state to "Released"
+        data->state = LV_INDEV_STATE_REL;  // Tell LVGL a click is "Released"
     }
 }
 
@@ -1684,6 +1698,22 @@ void setup() {
 #endif
   loadSpeedUnitsFromNvs();
 
+ // --- CAPACITIVE TOUCH HARDWARE PING TEST ---
+    Serial.println("[BOOT] Scanning internal DSI lane I2C for touch chip...");
+    
+    // Explicitly configure the internal I2C bus using the dedicated touch lines
+    Wire.begin(TOUCH_SDA, TOUCH_SCL); 
+
+    // Ping the Goodix GT911 hardware address
+    Wire.beginTransmission(0x5D); 
+    if (Wire.endTransmission() == 0) {
+        Serial.println("[BOOT] SUCCESS: MIPI DSI GT911 touch panel ready.");
+        tp.begin();
+        g_touch_online = true;
+    } else {
+        Serial.println("[BOOT] WARNING: Display unattached. Continuing headlessly over Web UI.");
+        g_touch_online = false;
+    }
 
   // 3. GRAPHICS DISPLAY & TOUCH ENVIRONMENT ENVIRONMENT BINDING
   // Allocate full-frame double buffers from OPI PSRAM before lv_init().
