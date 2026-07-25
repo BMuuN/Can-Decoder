@@ -426,6 +426,402 @@ static const ModuleScanEntry kMebModuleCatalog[] = {
     {0x37, "NAV",    "Navigation (MIB3 embedded)",       "HERE maps, cloud traffic, EV route plan"},
 };
 
+// =========================================================================
+//  POWERTRAIN SPEC TABLE
+// =========================================================================
+// Maps chassis code + production-year window to known-valid engine calibration
+// codes and gearbox codes.  Codes are the 3-4 character suffix from VAG ECU
+// component strings (e.g. "04E906027HJ DADA" → code = "DADA").
+// Gearbox codes follow the same convention from the TCU component string.
+// This table is intentionally non-exhaustive: an unknown code is flagged as
+// UNVERIFIED rather than INVALID, since the list may be incomplete.
+// =========================================================================
+struct PowertrainSpec {
+    const char* chassis;
+    int year_from;
+    int year_to;
+    const char* valid_engine_codes;   // comma-separated calibration suffixes
+    const char* valid_gearbox_codes;  // comma-separated codes
+    const char* summary;              // human-readable powertrain description
+};
+
+static const PowertrainSpec kPowertrainSpecs[] = {
+    // --- AUDI ---
+    // A3 / S3 / RS3  8V  MQB (2013-2020)
+    {"8V", 2013, 2020,
+     "CJZA,CZCA,CXSA,CJSA,DADA,CHHB,DJHB,CRBC,DKLA,BHK,DBYA",
+     "JHM,QNL,MMN,LMP,MXV,HXS,DQ250,DQ381",
+     "Audi A3/S3/RS3 MQB 8V — Engines: 1.0-2.5 TFSI / 2.0 TDI | Gearboxes: Manual, DSG6 DQ250, DSG7 DQ381"},
+    // A3 / S3 / RS3  GY / 8Y  MQB EVO (2020+)
+    {"GY", 2020, 2030,
+     "DAZA,TJXA,DKLA,DADA,DPCA",
+     "QNL,DQ381,MXW",
+     "Audi RS3/A3 MQB EVO GY — Engines: 2.5 TFSI RS3 (DAZA), 1.0-1.5 TSI | Gearbox: DSG7 DQ381"},
+    {"8Y", 2020, 2030,
+     "DAZA,DKLA,DADA,DJHB,DPCA",
+     "QNL,DQ381,MXW",
+     "Audi A3/S3/RS3 MQB EVO 8Y — Engines: 1.0-2.5 TFSI | Gearbox: DSG7 DQ381 / Manual"},
+    // A4 / S4 / RS4  8K  MLB B8 (2007-2016)
+    {"8K", 2007, 2016,
+     "CDNB,CAEB,CDHB,CDVC,CFKA,CMGD,CNHA,CGWB",
+     "JXX,GLH,MXW,PYP,DL501,TPC",
+     "Audi A4/S4/RS4 MLB B8 — Engines: 1.8-3.0 TFSI / 2.0 TDI | Gearboxes: Manual, S-Tronic DL501, Tiptronic"},
+    // A4 / S4  8W / F4  MLB B9 (2015+)
+    {"8W", 2015, 2030,
+     "DETA,DLZB,CYNB,CYMC,DEJA,DDAA,DDWB,DAZA",
+     "PYP,QTE,LVS,DL501",
+     "Audi A4/S4 MLB B9 — Engines: 2.0-3.0 TFSI / 2.0 TDI | Gearboxes: Manual, S-Tronic 7"},
+    {"F4", 2016, 2030,
+     "DETA,DLZB,CYNB,CYMC,DEJA,DDAA",
+     "PYP,QTE,DL501",
+     "Audi A5/RS5 MLB B9"},
+    // A6 / S6 / A7 / RS6  4G  MLB C7 (2011-2018)
+    {"4G", 2011, 2018,
+     "CDNB,CGWB,CREC,CTGA,CTWC,CRLD,CTTB",
+     "JXX,GLH,MXW,DL501",
+     "Audi A6/A7/S6/RS6 MLB C7 — Engines: 2.0-4.0 TFSI / 3.0 TDI | Gearboxes: Manual, S-Tronic, Tiptronic"},
+    // A6 / A7 / RS7  4K  MLB C8 (2018+)
+    {"4K", 2018, 2030,
+     "DETA,DLZB,DEJB,DNAC,CREC,CTWB",
+     "PYP,QTE,DL501",
+     "Audi A6/A7/S6/RS7 MLB C8 — Engines: 2.0-4.0 TFSI / 3.0 TDI"},
+    // A5 / S5 / RS5  8T / 8F  MLB B8 Coupe/Cabriolet (2007-2017)
+    {"8T", 2007, 2017,
+     "CDNB,CAEB,CDVC,CNHA,CMGD,CFKA",
+     "JXX,GLH,MXW,PYP",
+     "Audi A5/S5/RS5 MLB B8 — Engines: 1.8-4.2 TFSI / 2.0 TDI | Gearboxes: Manual, S-Tronic, Multitronic"},
+    {"8F", 2009, 2017,
+     "CDNB,CAEB,CDVC,CNHA",
+     "JXX,GLH,MXW",
+     "Audi A5 Cabriolet MLB B8"},
+    // A8 / S8  4H  MLB D4 (2009-2017)
+    {"4H", 2009, 2017,
+     "CDRA,CREC,CGWB,CDSB,CEUA",
+     "MXW,JXX,GLH,TPC",
+     "Audi A8/S8 MLB D4 — Engines: 3.0-6.3 TFSI / 3.0 TDI | Gearboxes: Tiptronic"},
+    // A8 / S8  4N  MLB EVO D5 (2017+)
+    {"4N", 2017, 2030,
+     "CREC,CTWB,CGWB,DETA,DLZB",
+     "PYP,QTE,DL501",
+     "Audi A8/S8 MLB D5 — Engines: 3.0-4.0 TFSI / 3.0 TDI"},
+    // TT / TTS / TT RS  8J  PQ35 Mk2 (2006-2014)
+    {"8J", 2006, 2014,
+     "BWA,CAWB,CDMA,BHZ,CDLB",
+     "HXS,JXX,MXW,KNS,JPT",
+     "Audi TT Mk2 PQ35 — Engines: 2.0 TFSI 200/211hp, 3.2 VR6 | Gearboxes: Manual, DSG6 DQ250, S-Tronic"},
+    // TT / TTS / TT RS  8S  MQB Mk3 (2014-2023)
+    {"8S", 2014, 2023,
+     "CHHB,DJHB,DAZA,TFKA",
+     "JHM,QNL,LMP,DQ250,DQ381",
+     "Audi TT Mk3 MQB — Engines: 2.0 TFSI TT/TTS, 2.5 TFSI TT RS | Gearboxes: Manual, DSG6, DSG7"},
+    // Q3  8U  PQ35 (2011-2018)
+    {"8U", 2011, 2018,
+     "CHPA,CCZC,CRBC,CDNB,CGWB,DKRF",
+     "JHM,MXV,GLH,DQ250",
+     "Audi Q3 PQ35 8U — Engines: 1.4-2.0 TSI / 2.0 TDI | Gearboxes: Manual, DSG6 DQ250, 6-spd Auto"},
+    // Q3 / RS Q3  F3  MQB Evo (2018+)
+    {"F3", 2018, 2030,
+     "DKLA,DADA,DJHB,CRBC,DFGA,CZPA",
+     "QNL,JHM,DQ381",
+     "Audi Q3 MQB Evo F3 — Engines: 1.5-2.0 TFSI / 2.0 TDI | Gearboxes: DSG7 DQ381, DSG6 DQ250"},
+    // Q5 / SQ5  8R  MLB (2008-2017)
+    {"8R", 2008, 2017,
+     "CDNB,CGWB,CDVC,CNHA,CREC,CMGD",
+     "JXX,GLH,MXW,DL501",
+     "Audi Q5 MLB 8R — Engines: 2.0-3.0 TFSI / 2.0-3.0 TDI | Gearboxes: S-Tronic, Tiptronic, Multitronic"},
+    // Q5 / SQ5  FY  MLB EVO (2017+)
+    {"FY", 2017, 2030,
+     "DETA,DLZB,CNHA,DEJB,DDAA",
+     "PYP,QTE,DL501",
+     "Audi Q5/SQ5 MLB EVO FY — Engines: 2.0-3.0 TFSI / 2.0 TDI"},
+    // Q7  4L  PQ47 (2005-2015)
+    {"4L", 2005, 2015,
+     "CTWA,CCGA,CREC,CKDA,BHK,CDRA",
+     "JXX,GLH,TIE,DL501",
+     "Audi Q7 PQ47 4L — Engines: 3.0-4.2 TFSI / 3.0-6.0 TDI | Gearboxes: 6-spd Tiptronic"},
+    // Q7 / SQ7 / Q8  4M  MLB EVO (2015+)
+    {"4M", 2015, 2030,
+     "CREC,CNHA,DETA,DEJA,CTWB",
+     "PYP,QTE,DL501",
+     "Audi Q7/SQ7/Q8/SQ8/RSQ8 MLB EVO 4M — Engines: 2.0-4.0 TFSI / 3.0 TDI"},
+    // Q2  GA  MQB (2016+)
+    {"GA", 2016, 2030,
+     "CZCA,DKLA,DADA,CRBC,DJHB",
+     "QNL,JHM,LMP,DQ381",
+     "Audi Q2 MQB GA — Engines: 1.0-2.0 TSI / 2.0 TDI | Gearboxes: Manual, DSG6, DSG7"},
+    // A1  8X  PQ25 (2010-2018)
+    {"8X", 2010, 2018,
+     "CHZB,CJSA,CZCA,CPWA,CAWB",
+     "MXV,JHM,HXX",
+     "Audi A1 PQ25 8X — Engines: 1.0-1.8 TFSI | Gearboxes: Manual, DSG6 DQ250"},
+    // A1 Sportback  GB  MQB A0 (2018+)
+    {"GB", 2018, 2030,
+     "DKLA,CHZB,CZCA,DADA,DJHB",
+     "QNL,MXV,DQ381",
+     "Audi A1 Sportback MQB A0 GB — Engines: 1.0-2.0 TSI | Gearboxes: Manual, DSG7 DQ381"},
+    // A3  8L  PQ24 (1996-2003)
+    {"8L", 1996, 2003,
+     "AXX,BFQ,BHE,AGU,ARZ,BAM,ATC,APX",
+     "DUU,DKG,FZP,EGZ",
+     "Audi A3 PQ24 8L — Engines: 1.6-1.8T / 1.9 TDI | Gearboxes: Manual, DSG5"},
+    // A4 / S4 / Cabriolet  8E / 8H  PQ24 B6/B7 (2000-2009)
+    {"8E", 2000, 2009,
+     "AXX,BWT,BFB,ALT,AWA,BNA,BGB,AVB,BHF,BEX",
+     "DQS,HXS,DYL,GBT,ELU,LUK",
+     "Audi A4/S4/RS4 B6/B7 PQ24 — Engines: 1.6-4.2 V8 / 2.0 TDI | Gearboxes: Manual, DSG6"},
+    {"8H", 2002, 2009,
+     "AXX,BWT,BFB,ALT",
+     "DQS,GBT",
+     "Audi A4 Cabriolet PQ24 B6/B7"},
+    // A6 / S6 / RS6  4F  C6 PQ35-class (2004-2011)
+    {"4F", 2004, 2011,
+     "BXA,AXZ,BYU,AUK,BNA,BPP,BLB,BNG,CALA",
+     "JXX,GBT,MXW,DL501",
+     "Audi A6/S6/RS6/A6 Avant C6 4F — Engines: 2.4-5.2 V10 / 2.7-3.0 TDI"},
+    // Porsche Cayenne  92  MLB (2010-2018)
+    {"92", 2010, 2018,
+     "CTWA,CREC,CGWB,CDRA",
+     "PYP,JXX,TPC",
+     "Porsche Cayenne 92A — Engines: 3.0-4.8 TFSI / 3.0 TDI | Gearboxes: Tiptronic, PDK"},
+    // Porsche Macan  9B  MLB (2014-2023)
+    {"9B", 2014, 2023,
+     "CPDB,CMNA,CREC,CJXC",
+     "PYP,JXX,PDK",
+     "Porsche Macan 95B — Engines: 2.0-3.6 TFSI | Gearboxes: PDK"},
+
+    // --- VOLKSWAGEN ---
+    // Golf 7 / GTI / Golf R  MQB (2012-2021)
+    {"5G", 2012, 2021,
+     "CJZA,CHPA,CZCA,DADA,CJSA,CHHB,DJHB,CRBC,CRKB,DKRF,CHZB,DPCA",
+     "MQS,JHM,QNL,QSB,LMP,DQ250,DQ381",
+     "VW Golf Mk7/GTI/R MQB 5G — Engines: 1.0-2.0 TSI / 2.0 TDI | Gearboxes: Manual 6, DSG6 DQ250, DSG7 DQ381"},
+    {"BA", 2012, 2021,
+     "CJZA,CHPA,CZCA,DADA,CJSA,CHHB,DJHB,CRBC,CRKB,DKRF",
+     "MQS,JHM,QNL,QSB,LMP",
+     "VW Golf 7 Variant/Alltrack MQB BA"},
+    {"AM", 2012, 2021,
+     "CJZA,CHPA,CZCA,DADA,CJSA,CHHB,DJHB,CRBC",
+     "MQS,JHM,QNL,LMP",
+     "VW Golf Sportsvan MQB AM"},
+    {"AU", 2012, 2021,
+     "CJZA,CHPA,CZCA,DADA,CJSA,CHHB,DJHB,CRBC",
+     "MQS,JHM,QNL,LMP,DSU",
+     "VW Golf GTE/e-Golf MQB AU"},
+    // Golf 8 / GTI / GTE / R  MQB EVO (2019+)
+    {"CD", 2019, 2030,
+     "DKRF,DKRD,DADA,DPCA,DNPA,DLBA,DTSA,DFGA,CZPA",
+     "MQS,QNL,QSB,DSU,DQ381",
+     "VW Golf 8/GTI/GTE/R MQB EVO CD — Engines: 1.0-2.0 TSI eHybrid / 2.0 TDI | Gearboxes: Manual, DSG7, DQ400e"},
+    // Passat B6 / CC  PQ35 (2005-2015)
+    {"3C", 2005, 2010,
+     "BWA,CAWB,CDNB,BKD,BMP,BVY,CJSA",
+     "HXS,GLH,GBT,MXV,DQ250",
+     "VW Passat B6/CC PQ35 3C — Engines: 1.8-3.6 V6 FSI / 2.0 TDI | Gearboxes: Manual, DSG6, 6-spd Auto"},
+    {"AN", 2010, 2015,
+     "BWA,CAWB,CDNB,BKD,CFF,CFG,CDNC",
+     "HXS,GLH,GBT,MXV",
+     "VW Passat B7 PQ35 AN"},
+    // Passat B8  MQB (2014+)
+    {"3G", 2014, 2030,
+     "CZPA,DADA,CJSA,CRBC,DGCA,CZD,DPCA",
+     "MQS,QNL,JHM,DSU,DQ381",
+     "VW Passat B8 MQB 3G — Engines: 1.4-2.0 TSI / 2.0 TDI | Gearboxes: Manual, DSG6 DQ250, DSG7 DQ381"},
+    {"CB", 2014, 2030,
+     "CZPA,DADA,CJSA,CRBC,DGCA",
+     "MQS,QNL,JHM",
+     "VW Passat B8 Variant MQB CB"},
+    // Passat B9  MQB EVO (2023+)
+    {"A3", 2023, 2030,
+     "DETA,DADA,DGCA,DDAA,DFGA",
+     "QNL,QTE,DQ381",
+     "VW Passat B9 MQB EVO A3"},
+    // Scirocco  PQ35 (2008-2017)
+    {"13", 2008, 2017,
+     "BWA,CAWB,CDMA,CDNB,CFGB,CHHB",
+     "HXS,JHM,MXV,GBT,DQ250",
+     "VW Scirocco PQ35 13 — Engines: 1.4 TSI to 2.0 TFSI / 2.0 TDI"},
+    // Tiguan Mk1  PQ35 (2007-2017)
+    {"5N", 2007, 2017,
+     "BWA,CAWB,CDNB,CRBC,CFFA,CAWB",
+     "HXS,JHM,GLH,MXV,DQ250",
+     "VW Tiguan Mk1 PQ35 5N — Engines: 1.4-2.0 TSI / 2.0 TDI | Gearboxes: Manual, DSG6 DQ250, 6-spd Auto"},
+    // Tiguan Mk2  MQB (2016-2023)
+    {"AD", 2016, 2023,
+     "CZPA,DKRF,DADA,CRBC,DFGA,DGCA",
+     "QNL,JHM,MQS,DQ381,DQ250",
+     "VW Tiguan Mk2 MQB AD — Engines: 1.4-2.0 TSI / 2.0 TDI | Gearboxes: Manual, DSG6 DQ250, DSG7 DQ381"},
+    {"AX", 2016, 2023,
+     "CZPA,DKRF,DADA,CRBC,DFGA",
+     "QNL,JHM,DQ381",
+     "VW Tiguan Allspace MQB AX"},
+    // Tiguan Mk3  MQB EVO (2023+)
+    {"CT", 2023, 2030,
+     "DADA,DFGA,DNPA,DPCA",
+     "QNL,QSB,DQ381",
+     "VW Tiguan Mk3 MQB EVO CT"},
+    // Arteon  MQB (2017+)
+    {"3H", 2017, 2030,
+     "CHHB,DJHB,DADA,CRBC,DFGA,CZPA",
+     "QNL,MQS,DQ381",
+     "VW Arteon MQB 3H — Engines: 1.5-2.0 TSI / 2.0 TDI"},
+    // Polo PQ25 (2009-2018)
+    {"6R", 2009, 2018,
+     "CHZB,CZCA,CLNA,CRPC,CAYA,DKLA",
+     "MXV,MXJ,JHM,HXX",
+     "VW Polo PQ25 6R — Engines: 1.0-1.8 TSI / 1.4 TDI"},
+    {"6C", 2014, 2018,
+     "CHZB,CZCA,CLNA",
+     "MXV,JHM",
+     "VW Polo PQ25 6C"},
+    // Polo MQB A0 (2017+)
+    {"AW", 2017, 2030,
+     "CHZB,DKLA,CZCA,DADA,DJHB",
+     "QNL,MXV,DQ381",
+     "VW Polo MQB A0 AW — Engines: 1.0-2.0 TSI"},
+    // Golf Mk5 / Mk6 / Jetta  PQ35 (2003-2015)
+    {"1K", 2003, 2009,
+     "BLG,CAVE,BJX,BWA,CAWB,BKD,CJSA,BAG,BLP,CHHB",
+     "GBT,HXS,JLN,MXV,DQ250",
+     "VW Golf Mk5 PQ35 1K — Engines: 1.4 TSI to 2.0 TFSI GTI / R32 / 2.0 TDI"},
+    {"5K", 2008, 2013,
+     "BLG,CAVE,BJX,CAWB,CHHB,CDNB,BKD,CRKB",
+     "GBT,HXS,JHM,MXV",
+     "VW Golf Mk6/GTI/R PQ35 5K"},
+    {"AJ", 2005, 2015,
+     "BLG,CAVE,BJX,BWA,CAWB,BKD,CDNB",
+     "GBT,HXS,JLN,MXV",
+     "VW Jetta PQ35 AJ"},
+    // Golf Mk4 / Bora  PQ24 (1997-2006)
+    {"1J", 1997, 2006,
+     "AXX,AGU,APX,AUQ,BFQ,AVR,AZM,ARL,BHW",
+     "DUU,DKG,EPE,FZP,HXS",
+     "VW Golf Mk4/Bora PQ24 1J — Engines: 1.6-1.8T / R32 / TDI"},
+    // Polo Mk4 9N  PQ24 (2001-2010)
+    {"9N", 2001, 2010,
+     "BBZ,BKY,BME,AWY,BUD,AXR",
+     "DQP,HXX,EGH",
+     "VW Polo Mk4 PQ24 9N — Engines: 1.2-1.8 / TDI"},
+    // Bora  PQ24 (1998-2006)
+    {"1C", 1998, 2006,
+     "AGU,AXX,APX,AUQ,AVF,AZM,ARJ",
+     "DUU,DKG,FZP",
+     "VW Bora PQ24 1C"},
+
+    // --- SEAT / CUPRA ---
+    // Leon Mk2  PQ35 (2005-2012)
+    {"1P", 2005, 2012,
+     "BWA,CAWB,BKD,BMP,CDMA,CHHB,CDNB",
+     "HXS,GBT,MXV,DQ250",
+     "Seat Leon Mk2/Cupra PQ35 1P — Engines: 1.4-2.0 TSI Cupra / 2.0 TDI"},
+    // Leon Mk3 / Cupra  MQB (2012-2020)
+    {"5F", 2012, 2020,
+     "CJZA,CZCA,CHHB,DJHB,CRKB,CRBC,DKLA",
+     "LMP,JHM,QNL,DQ250,DQ381",
+     "Seat Leon Mk3/Cupra MQB 5F — Engines: 1.2-2.0 TSI / 2.0 TDI | Gearboxes: Manual, DSG6, DSG7"},
+    // Cupra Leon / Formentor  MQB EVO (2020+)
+    {"KL", 2020, 2030,
+     "DJHB,DKRG,DNPA,DTSA",
+     "QNL,DQ381,DSU",
+     "Cupra Leon/Formentor MQB EVO KL — Engines: 2.0 TSI / 1.4 eHybrid | Gearbox: DSG7 DQ381"},
+    // Ibiza / Arona  MQB A0 (2017+)
+    {"KJ", 2017, 2030,
+     "CHZB,DKLA,CZCA,DADA,DJHB",
+     "QNL,MXV,DQ381",
+     "Seat Ibiza/Arona MQB A0 KJ — Engines: 1.0-1.5 TSI"},
+
+    // --- SKODA ---
+    // Octavia Mk2  PQ35 (2004-2013)
+    {"1Z", 2004, 2013,
+     "BWA,BKD,BMP,CDNB,CAWB,CHHB",
+     "HXS,GBT,MXV,DQ250",
+     "Skoda Octavia Mk2/vRS PQ35 1Z — Engines: 1.6-2.0 TSI RS / 2.0 TDI | Gearboxes: Manual, DSG6"},
+    // Octavia Mk3  MQB (2012-2020)
+    {"5E", 2012, 2020,
+     "CJZA,CZCA,CJSA,CHHB,CRKB,CRBC,DJHB",
+     "MXV,JHM,QNL,DQ250,DQ381",
+     "Skoda Octavia Mk3/vRS MQB 5E — Engines: 1.0-2.0 TSI RS / 2.0 TDI"},
+    // Octavia Mk4  MQB EVO (2020+)
+    {"NX", 2020, 2030,
+     "DJHB,DADA,DKRF,DFGA,DPCA",
+     "QNL,MQS,DQ381",
+     "Skoda Octavia Mk4 MQB EVO NX"},
+    // Superb 3T  PQ35-class (2008-2015)
+    {"3T", 2008, 2015,
+     "BWA,CDNB,CRBC,CFGB,CCZ,CHHB",
+     "HXS,GLH,GBT,MXV,DQ250",
+     "Skoda Superb 3T PQ35 — Engines: 1.8-3.6 V6 / 2.0 TDI | Gearboxes: Manual, DSG6, 6-spd Auto"},
+    // Superb  MQB (2015+)
+    {"3V", 2015, 2030,
+     "CZPA,DADA,CJSA,CRBC,DFGA,DPCA",
+     "MXV,JHM,QNL,DQ381",
+     "Skoda Superb MQB 3V — Engines: 1.4-2.0 TSI / 2.0 TDI"},
+
+    // --- MEB ELECTRIC (no ICE engine code; TCU is a single-speed reducer) ---
+    {"E1", 2019, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "VW ID.3 MEB — Electric motor; single-speed reducer"},
+    {"E2", 2020, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "VW ID.4 / ID.4 GTX MEB — Electric"},
+    {"E3", 2021, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "VW ID.5 MEB — Electric"},
+    {"E9", 2022, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "VW ID.Buzz MEB — Electric"},
+    {"EB", 2022, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "VW ID.Buzz Cargo MEB — Electric"},
+    {"FZ", 2021, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "Audi Q4 e-tron MEB — Electric"},
+    {"I1", 2020, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "Skoda Enyaq iV MEB — Electric"},
+    {"K1", 2021, 2030, "VCU,MCU,BEV,EEM", "EDS,SSD", "Cupra Born MEB — Electric"},
+};
+
+// Returns the first matching PowertrainSpec for the given chassis + year, or nullptr.
+static const PowertrainSpec* getPowertrainSpec(const char* chassis, int year) {
+    if (chassis == nullptr || chassis[0] == '\0') return nullptr;
+    for (size_t i = 0; i < sizeof(kPowertrainSpecs) / sizeof(kPowertrainSpecs[0]); i++) {
+        const PowertrainSpec& s = kPowertrainSpecs[i];
+        if (strcmp(s.chassis, chassis) == 0 && year >= s.year_from && year <= s.year_to) {
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
+// Returns true if 'code' matches any comma-separated entry in 'list' (case-insensitive).
+static bool codeInList(const char* code, const char* list) {
+    if (code == nullptr || list == nullptr || code[0] == '\0' || list[0] == '\0') return false;
+    const size_t code_len = strlen(code);
+    const char* p = list;
+    while (*p) {
+        const char* comma = strchr(p, ',');
+        size_t entry_len = comma ? (size_t)(comma - p) : strlen(p);
+        if (entry_len == code_len && strncasecmp(code, p, code_len) == 0) return true;
+        p = comma ? comma + 1 : p + entry_len;
+        if (!comma) break;
+    }
+    return false;
+}
+
+void validatePowertrainCodes(const char* chassis, int year,
+                             const char* engine_code, const char* gearbox_code,
+                             bool* engine_valid_out, bool* gearbox_valid_out,
+                             bool* combination_valid_out) {
+    *engine_valid_out     = false;
+    *gearbox_valid_out    = false;
+    *combination_valid_out = false;
+
+    const PowertrainSpec* spec = getPowertrainSpec(chassis, year);
+    if (spec == nullptr) return;
+
+    const bool have_engine  = engine_code  && engine_code[0];
+    const bool have_gearbox = gearbox_code && gearbox_code[0];
+
+    if (have_engine)  *engine_valid_out  = codeInList(engine_code,  spec->valid_engine_codes);
+    if (have_gearbox) *gearbox_valid_out = codeInList(gearbox_code, spec->valid_gearbox_codes);
+
+    // Combination is valid if every retrieved code is individually valid.
+    *combination_valid_out = (have_engine  ? *engine_valid_out  : true) &&
+                             (have_gearbox ? *gearbox_valid_out : true) &&
+                             (have_engine || have_gearbox);
+}
+
+const char* lookupExpectedPowertrainDescription(const char* chassis, int year) {
+    const PowertrainSpec* spec = getPowertrainSpec(chassis, year);
+    return spec ? spec->summary : nullptr;
+}
+
 PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen);  // fwd-declared in header
 
 const ModuleScanEntry* getPlatformModuleCatalog(MqbPlatformSeries gen, size_t* out_count) {

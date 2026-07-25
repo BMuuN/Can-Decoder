@@ -199,6 +199,22 @@ const char* infotainmentSourceLabel(uint8_t code);
 const char* availabilityLabel(bool known, bool active, const char* active_label, const char* inactive_label, const char* unknown_label = "UNAVAILABLE");
 const char* openClosedLabel(bool open);
 
+// --- POWERTRAIN IDENTITY & VALIDATION ---
+// Populated after VIN decode by performPowertrainCheck().
+// Live mode: codes are retrieved over CAN (UDS 0x22).
+// Bench mode: engine/gearbox_code are empty; the check prints expected profiles.
+struct PowertrainValidation {
+    char engine_code[12]  = {'\0'};  // e.g. "DADA", "CHHB" — from ECU component string
+    char gearbox_code[12] = {'\0'};  // e.g. "QNL", "JHM"  — from TCU component string
+    uint8_t steering_hand = 2;       // 0 = LHD, 1 = RHD, 2 = UNKNOWN
+    bool engine_retrieved   = false; // UDS request succeeded
+    bool gearbox_retrieved  = false; // UDS request succeeded (false = manual / no TCU)
+    bool steering_retrieved = false; // BCM coding byte retrieved
+    bool engine_valid       = false; // code found in known-good table for chassis + year
+    bool gearbox_valid      = false; // code found in known-good table
+    bool combination_valid  = false; // both codes validated together
+};
+
 struct DecodedVehicleMetrics {
     const char* brand = "VAG MOTOR CORP";
     const char* model_name = "GENERIC MODEL ARCHITECTURE";
@@ -206,7 +222,21 @@ struct DecodedVehicleMetrics {
     int production_year = 0;
     MqbPlatformSeries network_generation = SERIES_UNKNOWN;
     PlatformCapabilities caps;           // Feature availability flags for UI gating
+    char chassis_code[3] = {'\0', '\0', '\0'}; // 2-char VIN chassis identifier (e.g. "8V")
+    PowertrainValidation powertrain;
 };
+
+// Validate retrieved engine/gearbox codes against the known-good powertrain table.
+// Sets *engine_valid_out, *gearbox_valid_out, *combination_valid_out.
+// A nullptr or empty string code pointer means "not retrieved" and is not validated.
+void validatePowertrainCodes(const char* chassis, int year,
+                             const char* engine_code, const char* gearbox_code,
+                             bool* engine_valid_out, bool* gearbox_valid_out,
+                             bool* combination_valid_out);
+
+// Returns a human-readable string listing expected engine/gearbox families for the
+// given chassis + year, or nullptr if no entry exists in the table.
+const char* lookupExpectedPowertrainDescription(const char* chassis, int year);
 
 // --- ABSTRACT MULTI-VEHICLE PARSER INTERFACE BLUEPRINT ---
 class BaseVehicleInterpreter {

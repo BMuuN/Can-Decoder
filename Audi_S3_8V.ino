@@ -270,6 +270,7 @@ void restoreLiveVehicleIdentity() {
         Serial.print("[SYSTEM] SUCCESS! Detected Car VIN: ");
         Serial.println(live_vin);
         decodeAndPrintVehicleIdentity(live_vin);
+        performPowertrainCheck(false); // live: request engine/gearbox codes + LHD/RHD
     } else {
         Serial.println("[SYSTEM] WARNING: VIN query timed out. Defaulting to generic layout profiles.");
         revertToGenericVehicleProfile();
@@ -638,6 +639,7 @@ void runFullBenchVinTestStep() {
                           (unsigned)g_fulltest_total_steps,
                           vin);
             decodeAndPrintVehicleIdentity(vin);
+            performPowertrainCheck(true); // bench mode: print expected profiles (no CAN requests)
             applyUiProfileForCurrentInterpreter();
             advanceFulltestCursor(year_count);
             return;
@@ -899,6 +901,10 @@ const char index_html[] PROGMEM = R"rawhtml(
     <tr><td>Module Voltage</td><td id="dg_vbat">UNAVAILABLE</td></tr>
     <tr><td>Last Response</td><td id="dg_last">UNAVAILABLE</td></tr>
     <tr><td>Diag Samples</td><td id="dg_count">0</td></tr>
+    <tr><td>Engine Code</td><td id="dg_engine">---</td></tr>
+    <tr><td>Gearbox Code</td><td id="dg_gearbox">---</td></tr>
+    <tr><td>Steering Hand</td><td id="dg_steer">---</td></tr>
+    <tr><td>Powertrain Valid</td><td id="dg_pt_valid">---</td></tr>
     <tr><td>WebSocket</td><td id="dg_ws">CONNECTING</td></tr>
 </table>
 <div style="margin-top:14px">
@@ -1158,6 +1164,25 @@ function update(d) {
     document.getElementById('dg_vbat').textContent  = d.volt_ok ? (d.volt||0).toFixed(2) + ' V' : 'UNAVAILABLE';
     document.getElementById('dg_last').textContent  = d.diag_seen ? ('0x' + (d.diag_src || 0).toString(16).toUpperCase() + ' / 0x' + (d.diag_svc || 0).toString(16).toUpperCase() + ' / 0x' + (d.diag_pid || 0).toString(16).toUpperCase()) : 'UNAVAILABLE';
     document.getElementById('dg_count').textContent = d.diag_seen ? String(d.diag_cnt || 0) : '0';
+
+    // Powertrain identity
+    var engEl  = document.getElementById('dg_engine');
+    var gbxEl  = document.getElementById('dg_gearbox');
+    var strEl  = document.getElementById('dg_steer');
+    var ptEl   = document.getElementById('dg_pt_valid');
+    var engCode = d.pt_engine  || '';
+    var gbxCode = d.pt_gearbox || '';
+    var steerTxt = d.pt_steer_got ? (d.pt_steer || 'UNKNOWN') : 'NOT RETRIEVED';
+    engEl.textContent  = d.pt_eng_got  ? (engCode || '(empty)') : 'NOT RETRIEVED';
+    engEl.className    = d.pt_eng_got  ? (d.pt_eng_ok  ? 'green' : 'amber') : 'blue';
+    gbxEl.textContent  = d.pt_gbx_got  ? (gbxCode || 'MANUAL / NO TCU') : 'NOT RETRIEVED';
+    gbxEl.className    = d.pt_gbx_got  ? (d.pt_gbx_ok  ? 'green' : 'amber') : 'blue';
+    strEl.textContent  = steerTxt;
+    strEl.className    = d.pt_steer_got ? 'white' : 'blue';
+    ptEl.textContent   = (d.pt_eng_got || d.pt_gbx_got) ?
+                           (d.pt_combo_ok ? 'VALIDATED' : 'UNVERIFIED') : 'PENDING';
+    ptEl.className     = (d.pt_eng_got || d.pt_gbx_got) ?
+                           (d.pt_combo_ok ? 'green' : 'amber') : 'blue';
 }
 
 function showTab(id, btn) {
@@ -1455,6 +1480,25 @@ void CockpitCoreProcessor(void *pvParameters) {
           doc["cap_ota"]       = caps.has_ota_status;
         }
 
+        // Powertrain identity fields (engine code, gearbox code, LHD/RHD)
+        {
+          PowertrainValidation pt;
+          if (g_interpreter_mutex != NULL) xSemaphoreTake(g_interpreter_mutex, portMAX_DELAY);
+          pt = active_vehicle_profile.powertrain;
+          if (g_interpreter_mutex != NULL) xSemaphoreGive(g_interpreter_mutex);
+
+          doc["pt_engine"]    = pt.engine_code[0]  ? pt.engine_code  : "";
+          doc["pt_gearbox"]   = pt.gearbox_code[0] ? pt.gearbox_code : "";
+          doc["pt_steer"]     = (pt.steering_hand == 0) ? "LHD" :
+                                (pt.steering_hand == 1) ? "RHD" : "";
+          doc["pt_eng_ok"]    = pt.engine_valid;
+          doc["pt_gbx_ok"]    = pt.gearbox_valid;
+          doc["pt_combo_ok"]  = pt.combination_valid;
+          doc["pt_eng_got"]   = pt.engine_retrieved;
+          doc["pt_gbx_got"]   = pt.gearbox_retrieved;
+          doc["pt_steer_got"] = pt.steering_retrieved;
+        }
+
         const size_t payload_bytes = measureJson(doc) + 1; // include null terminator
         if (payload_bytes > sizeof(global_ws_buffer)) {
           const int written = snprintf(global_ws_buffer, sizeof(global_ws_buffer),
@@ -1546,6 +1590,8 @@ void setup() {
 
       // Call the dynamic parsing matrix safely
       decodeAndPrintVehicleIdentity(global_vin);
+      // Initial live powertrain check: engine code, gearbox code, LHD/RHD
+      performPowertrainCheck(false);
   } else {
       Serial.println("[SYSTEM] WARNING: VIN query timed out. Defaulting to generic layout profiles.");
   }
@@ -2187,6 +2233,322 @@ static void handlePasswordCancelTouch(lv_event_t * e) {
   closePasswordEditorOverlay();
 }
 
+// =========================================================================
+//  POWERTRAIN IDENTITY CHECK — ENGINE CODE, GEARBOX CODE, STEERING HAND
+// =========================================================================
+
+// --- HELPER: Extract last space-delimited token from an ECU component string ---
+// Component strings are formatted like "04E906027HJ DADA" or "0CW300045A QNL".
+// The last token (after the final space) is the 3-4 character calibration code.
+static void extractCodeFromComponentString(const char* component, char* code_out, size_t code_size) {
+    code_out[0] = '\0';
+    if (component == nullptr || component[0] == '\0' || code_size < 2) return;
+
+    const char* last_space = strrchr(component, ' ');
+    const char* code_start = last_space ? last_space + 1 : component;
+
+    // Trim trailing whitespace from the extracted token.
+    // 'len' now reflects the token length (not the full component string length)
+    // regardless of whether a space delimiter was found.
+    size_t len = strlen(code_start);
+    while (len > 0 && (code_start[len - 1] == ' ' || code_start[len - 1] == '\t')) len--;
+
+    // Reject if token is empty or too long to fit (including null terminator)
+    if (len == 0 || len >= code_size) return;
+    snprintf(code_out, code_size, "%.*s", (int)len, code_start);
+}
+
+// --- GENERIC UDS READ DATA BY IDENTIFIER REQUESTER ---
+// Sends a UDS 0x22 request to tx_id, collects the printable-ASCII response
+// from rx_id (single or multi-frame ISO-TP), and writes the result into out.
+// All communication uses CAN Channel 0 (the powertrain / OBD bus, which
+// the CAN gateway bridges to all other vehicle buses).
+// Returns true if at least one printable byte was received.
+static bool requestComponentString(uint16_t tx_id, uint16_t rx_id,
+                                   uint8_t did_hi, uint8_t did_lo,
+                                   char* out, size_t out_size) {
+    out[0] = '\0';
+    if (out_size < 2 || !g_twai0_valid.load(std::memory_order_acquire)) return false;
+
+    twai_message_t tx_msg = {};
+    tx_msg.identifier = tx_id;
+    tx_msg.data_length_code = 8;
+    tx_msg.data[0] = 0x03;   // payload: 3 bytes (SID + 2-byte DID)
+    tx_msg.data[1] = 0x22;   // UDS Read Data By Identifier
+    tx_msg.data[2] = did_hi;
+    tx_msg.data[3] = did_lo;
+    tx_msg.data[4] = tx_msg.data[5] = tx_msg.data[6] = tx_msg.data[7] = 0xAA;
+
+    if (twai_transmit_v2(twai_ports[0], &tx_msg, pdMS_TO_TICKS(100)) != ESP_OK) return false;
+
+    twai_message_t rx;
+    uint32_t t0 = millis();
+    size_t n = 0;
+    bool fc_sent = false;
+
+    while (millis() - t0 < 800 && n < out_size - 1) {
+        if (twai_receive_v2(twai_ports[0], &rx, pdMS_TO_TICKS(10)) != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+        if (rx.identifier != rx_id || rx.data_length_code < 2) continue;
+
+        uint8_t frame_type = rx.data[0] >> 4;
+
+        if (frame_type == 0x0) {
+            // Single frame: [0]=PCI/len, [1]=0x62, [2-3]=DID echo, [4+]=data
+            uint8_t plen = rx.data[0] & 0x0F;
+            if (rx.data[1] == 0x62 && plen >= 3) {
+                for (uint8_t i = 4; i <= plen && i < rx.data_length_code && n < out_size - 1; i++) {
+                    uint8_t b = rx.data[i];
+                    if (b >= 0x20 && b < 0x7F) out[n++] = (char)b;
+                }
+            }
+            break; // done
+        }
+        else if (frame_type == 0x1) {
+            // First frame: [0-1]=FF header, [2]=0x62, [3-4]=DID echo, [5-7]=first bytes
+            if (rx.data_length_code >= 6 && rx.data[2] == 0x62) {
+                for (uint8_t i = 5; i < rx.data_length_code && n < out_size - 1; i++) {
+                    uint8_t b = rx.data[i];
+                    if (b >= 0x20 && b < 0x7F) out[n++] = (char)b;
+                }
+                // Send ISO-TP Flow Control (Clear To Send, all frames, no separation time)
+                twai_message_t fc = {};
+                fc.identifier = tx_id;
+                fc.data_length_code = 8;
+                fc.data[0] = 0x30; fc.data[1] = 0x00; fc.data[2] = 0x00;
+                fc.data[3] = fc.data[4] = fc.data[5] = fc.data[6] = fc.data[7] = 0xAA;
+                twai_transmit_v2(twai_ports[0], &fc, pdMS_TO_TICKS(50));
+                fc_sent = true;
+            }
+        }
+        else if (frame_type == 0x2 && fc_sent) {
+            // Consecutive frame: [0]=sequence byte, [1-7]=data
+            for (uint8_t i = 1; i < rx.data_length_code && n < out_size - 1; i++) {
+                uint8_t b = rx.data[i];
+                if (b >= 0x20 && b < 0x7F) out[n++] = (char)b;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    out[n] = '\0';
+    // Trim trailing spaces
+    while (n > 0 && out[n - 1] == ' ') out[--n] = '\0';
+    return n > 0;
+}
+
+// --- UDS 0x22 F18B → ECU 0x7E0 / Response 0x7E8 ---
+// Returns engine component string (e.g. "04E906027HJ DADA") and extracts
+// the calibration code (e.g. "DADA") into code_out.
+static bool requestEngineCode(char* component_out, size_t comp_size,
+                               char* code_out,      size_t code_size) {
+    bool ok = requestComponentString(0x7E0, 0x7E8, 0xF1, 0x8B, component_out, comp_size);
+    if (ok) extractCodeFromComponentString(component_out, code_out, code_size);
+    else    code_out[0] = '\0';
+    return ok;
+}
+
+// --- UDS 0x22 F18B → TCU 0x7E1 / Response 0x7E9 ---
+// Manual-gearbox vehicles have no TCU and will time out — treated as "no code".
+static bool requestGearboxCode(char* component_out, size_t comp_size,
+                                char* code_out,      size_t code_size) {
+    bool ok = requestComponentString(0x7E1, 0x7E9, 0xF1, 0x8B, component_out, comp_size);
+    if (ok) extractCodeFromComponentString(component_out, code_out, code_size);
+    else    code_out[0] = '\0';
+    return ok;
+}
+
+// --- UDS 0x22 F1A3 → BCM 0x710 (then Gateway 0x714) / Coding Long-Coding byte ---
+// Reads the BCM or Gateway long-coding string and extracts bit 0 of the first
+// coding byte to determine steering orientation.
+// Returns: 0 = LHD, 1 = RHD, 2 = UNKNOWN (no response).
+static uint8_t requestSteeringHand() {
+    static const struct { uint16_t tx; uint16_t rx; } kTargets[] = {
+        {0x710, 0x718},  // BCM (Body Control Module)
+        {0x714, 0x71C},  // Gateway
+    };
+
+    for (size_t t = 0; t < sizeof(kTargets) / sizeof(kTargets[0]); t++) {
+        if (!g_twai0_valid.load(std::memory_order_acquire)) break;
+
+        twai_message_t tx_msg = {};
+        tx_msg.identifier = kTargets[t].tx;
+        tx_msg.data_length_code = 8;
+        tx_msg.data[0] = 0x03; tx_msg.data[1] = 0x22;
+        tx_msg.data[2] = 0xF1; tx_msg.data[3] = 0xA3; // DID F1A3: Long Coding
+        tx_msg.data[4] = tx_msg.data[5] = tx_msg.data[6] = tx_msg.data[7] = 0xAA;
+
+        if (twai_transmit_v2(twai_ports[0], &tx_msg, pdMS_TO_TICKS(100)) != ESP_OK) continue;
+
+        twai_message_t rx;
+        uint32_t t0 = millis();
+        bool got_response = false;
+        uint8_t first_coding_byte = 0xFF;
+
+        while (millis() - t0 < 600 && !got_response) {
+            if (twai_receive_v2(twai_ports[0], &rx, pdMS_TO_TICKS(10)) != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+            if (rx.identifier != kTargets[t].rx || rx.data_length_code < 2) continue;
+
+            uint8_t frame_type = rx.data[0] >> 4;
+            // Single frame: [0]=len, [1]=0x62, [2-3]=DID, [4]=first coding byte
+            if (frame_type == 0x0 && rx.data[1] == 0x62 && rx.data_length_code >= 5) {
+                first_coding_byte = rx.data[4];
+                got_response = true;
+            }
+            // First frame: [0-1]=FF, [2]=0x62, [3-4]=DID, [5]=first coding byte
+            else if (frame_type == 0x1 && rx.data[2] == 0x62 && rx.data_length_code >= 6) {
+                first_coding_byte = rx.data[5];
+                got_response = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+
+        if (got_response && first_coding_byte != 0xFF) {
+            // Bit 0 of the first coding byte: 0 = LHD, 1 = RHD
+            // (Zustand_Lenkung / Hand_Drive flag in MQB/MLB BCM long-coding)
+            return (first_coding_byte & 0x01) ? 1 : 0;
+        }
+    }
+    return 2; // UNKNOWN — no module responded
+}
+
+// --- ORCHESTRATOR: perform the post-VIN powertrain identity check ---
+// bench_mode = true  → print expected profiles from table (no CAN requests;
+//                        fulltest synthetic VINs have no real ECU behind them).
+// bench_mode = false → send live UDS requests for engine code, gearbox code,
+//                        and BCM steering orientation, then validate the results.
+void performPowertrainCheck(bool bench_mode) {
+    // Read chassis code and year from the current profile (brief mutex window).
+    char chassis[3] = {'\0', '\0', '\0'};
+    int  year = 0;
+    MqbPlatformSeries gen = SERIES_UNKNOWN;
+
+    if (g_interpreter_mutex != NULL) xSemaphoreTake(g_interpreter_mutex, portMAX_DELAY);
+    chassis[0] = active_vehicle_profile.chassis_code[0];
+    chassis[1] = active_vehicle_profile.chassis_code[1];
+    year       = active_vehicle_profile.production_year;
+    gen        = active_vehicle_profile.network_generation;
+    if (g_interpreter_mutex != NULL) xSemaphoreGive(g_interpreter_mutex);
+
+    if (chassis[0] == '\0') {
+        Serial.println("[POWERTRAIN] No chassis identified — skipping powertrain check.");
+        return;
+    }
+
+    Serial.println("\n--- POWERTRAIN IDENTITY CHECK ---");
+
+    if (bench_mode) {
+        // Bench / fulltest mode: look up expected profiles from the table.
+        const char* expected = lookupExpectedPowertrainDescription(chassis, year);
+        if (expected) {
+            Serial.printf("[POWERTRAIN EXPECTED] %s (%s, %d):\n  %s\n",
+                          active_vehicle_profile.model_name, chassis, year, expected);
+        } else {
+            Serial.printf("[POWERTRAIN EXPECTED] No table entry for chassis %s year %d.\n",
+                          chassis, year);
+        }
+        Serial.println("---------------------------------");
+        return;
+    }
+
+    // ---- Live mode: send UDS requests over CAN Channel 0 ----
+    const bool is_meb = (gen == SERIES_MQB_EVO_MEB);
+
+    char engine_component[48] = {'\0'};
+    char gearbox_component[48] = {'\0'};
+    char engine_code[12] = {'\0'};
+    char gearbox_code[12] = {'\0'};
+    bool eng_ok = false;
+    bool gbx_ok = false;
+
+    if (is_meb) {
+        Serial.println("[POWERTRAIN] MEB electric platform — no ICE engine/gearbox codes. Skipping ECU/TCU query.");
+    } else {
+        // Engine ECU component string (UDS 0x22 F18B → 0x7E0 / response 0x7E8)
+        Serial.print("[POWERTRAIN] Requesting engine component (0x7E0, DID F18B)...");
+        eng_ok = requestEngineCode(engine_component, sizeof(engine_component),
+                                   engine_code, sizeof(engine_code));
+        if (eng_ok) {
+            Serial.printf(" OK  Component: \"%s\"  Code: \"%s\"\n", engine_component, engine_code);
+        } else {
+            Serial.println(" TIMEOUT (ECU not responding / engine off)");
+        }
+
+        // Gearbox TCU component string (UDS 0x22 F18B → 0x7E1 / response 0x7E9)
+        Serial.print("[POWERTRAIN] Requesting gearbox component (0x7E1, DID F18B)...");
+        gbx_ok = requestGearboxCode(gearbox_component, sizeof(gearbox_component),
+                                    gearbox_code, sizeof(gearbox_code));
+        if (gbx_ok) {
+            Serial.printf(" OK  Component: \"%s\"  Code: \"%s\"\n", gearbox_component, gearbox_code);
+        } else {
+            Serial.println(" TIMEOUT (manual gearbox or no TCU response)");
+        }
+    }
+
+    // Steering orientation (BCM / Gateway long-coding DID F1A3)
+    Serial.print("[POWERTRAIN] Requesting steering orientation (BCM 0x710, DID F1A3)...");
+    uint8_t steer = requestSteeringHand();
+    const char* steer_str = (steer == 0) ? "LHD (Left-Hand Drive)"  :
+                            (steer == 1) ? "RHD (Right-Hand Drive)" :
+                                           "UNKNOWN (no BCM/GW response)";
+    Serial.printf(" %s\n", steer_str);
+
+    // Validate codes against the known-good powertrain table
+    bool engine_valid = false, gearbox_valid = false, combo_valid = false;
+    if (!is_meb && (engine_code[0] || gearbox_code[0])) {
+        validatePowertrainCodes(chassis, year,
+                                engine_code[0]  ? engine_code  : nullptr,
+                                gearbox_code[0] ? gearbox_code : nullptr,
+                                &engine_valid, &gearbox_valid, &combo_valid);
+    } else if (!is_meb) {
+        Serial.println("[POWERTRAIN] Both ECU and TCU did not respond — validation skipped.");
+    }
+
+    // Print validation summary
+    if (!is_meb) {
+        if (engine_code[0]) {
+            Serial.printf("[POWERTRAIN] Engine  code \"%s\": %s\n", engine_code,
+                          engine_valid ? "VALID for this model/year"
+                                       : "UNVERIFIED (code not in known-good list)");
+        }
+        if (gearbox_code[0]) {
+            Serial.printf("[POWERTRAIN] Gearbox code \"%s\": %s\n", gearbox_code,
+                          gearbox_valid ? "VALID for this model/year"
+                                        : "UNVERIFIED (code not in known-good list)");
+        }
+        if (engine_code[0] && gearbox_code[0]) {
+            Serial.printf("[POWERTRAIN] Engine + Gearbox combination: %s\n",
+                          combo_valid ? "VALIDATED" : "UNVERIFIED combination");
+        }
+    }
+
+    // Print what is expected for this chassis/year
+    const char* expected = lookupExpectedPowertrainDescription(chassis, year);
+    if (expected) {
+        Serial.printf("[POWERTRAIN] Expected for %s (%d): %s\n", chassis, year, expected);
+    }
+    Serial.println("---------------------------------");
+
+    // Store results in active_vehicle_profile.powertrain (under interpreter mutex)
+    if (g_interpreter_mutex != NULL) xSemaphoreTake(g_interpreter_mutex, portMAX_DELAY);
+    PowertrainValidation& pt = active_vehicle_profile.powertrain;
+    snprintf(pt.engine_code,  sizeof(pt.engine_code),  "%s", engine_code);
+    snprintf(pt.gearbox_code, sizeof(pt.gearbox_code), "%s", gearbox_code);
+    pt.steering_hand      = steer;
+    pt.engine_retrieved   = eng_ok;
+    pt.gearbox_retrieved  = gbx_ok;
+    pt.steering_retrieved = (steer != 2);
+    pt.engine_valid       = engine_valid;
+    pt.gearbox_valid      = gearbox_valid;
+    pt.combination_valid  = combo_valid;
+    if (g_interpreter_mutex != NULL) xSemaphoreGive(g_interpreter_mutex);
+}
+
 // --- ACTIVE UDS DIAGNOSTIC VIN EXTRACTION ---
 bool requestVehicleVIN(char* vinBuffer, size_t bufferSize) {
     if (bufferSize < 18) return false; // VIN is strictly 17 characters + null terminator
@@ -2306,6 +2668,10 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
     // =========================================================================
     char chassis[3] = { vin[6], vin[7], '\0' };
     active_vehicle_profile.network_generation = SERIES_UNKNOWN; // Reset baseline safety state
+    active_vehicle_profile.chassis_code[0] = vin[6];
+    active_vehicle_profile.chassis_code[1] = vin[7];
+    active_vehicle_profile.chassis_code[2] = '\0';
+    active_vehicle_profile.powertrain = PowertrainValidation{}; // Reset before new check
 
     // --- AUDI DIVISION MAPPINGS ---
     if (strcmp(chassis, "8P") == 0) {
