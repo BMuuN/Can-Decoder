@@ -2247,10 +2247,13 @@ static void extractCodeFromComponentString(const char* component, char* code_out
     const char* last_space = strrchr(component, ' ');
     const char* code_start = last_space ? last_space + 1 : component;
 
-    // Trim trailing whitespace from the token
+    // Trim trailing whitespace from the extracted token.
+    // 'len' now reflects the token length (not the full component string length)
+    // regardless of whether a space delimiter was found.
     size_t len = strlen(code_start);
     while (len > 0 && (code_start[len - 1] == ' ' || code_start[len - 1] == '\t')) len--;
 
+    // Reject if token is empty or too long to fit (including null terminator)
     if (len == 0 || len >= code_size) return;
     snprintf(code_out, code_size, "%.*s", (int)len, code_start);
 }
@@ -2502,6 +2505,8 @@ void performPowertrainCheck(bool bench_mode) {
                                 engine_code[0]  ? engine_code  : nullptr,
                                 gearbox_code[0] ? gearbox_code : nullptr,
                                 &engine_valid, &gearbox_valid, &combo_valid);
+    } else if (!is_meb) {
+        Serial.println("[POWERTRAIN] Both ECU and TCU did not respond — validation skipped.");
     }
 
     // Print validation summary
