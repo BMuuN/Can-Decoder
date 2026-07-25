@@ -2294,10 +2294,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       // C-3: Copy into a local buffer instead of writing data[len]=0, which
       //      writes one byte past the end of the AsyncTCP receive buffer and
       //      corrupts the heap.
-      char cmd[96];
-      size_t copy_len = (len < sizeof(cmd) - 1) ? len : (sizeof(cmd) - 1);
-      memcpy(cmd, data, copy_len);
-      cmd[copy_len] = '\0';
+      char cmd[128]; 
+        size_t copy_len = (len < sizeof(cmd) - 1) ? len : ( sizeof(cmd) - 1);
+        memcpy(cmd, data, copy_len);
+        cmd[copy_len] = '\0';
 
       if (strcmp(cmd, "RESET_PEAK") == 0) {
         // C-4: The peak field is also accessed from Core 1; protect with spinlock.
@@ -3213,6 +3213,7 @@ void decodeAndPrintVehicleIdentity(const char* vin) {
 
     // --- GROUP 1: MQB & MQB-EVO HIGH-SPEED TRANSLATION CLASS MATRIX ---
     if (active_vehicle_profile.network_generation == SERIES_MQB_A_CLASS) {
+        
         if (strcmp(chassis, "8V") == 0)       sys_ctx->interpreter = new AudiS38VInterpreter();
         else if (strcmp(chassis, "GY") == 0 || strcmp(chassis, "8Y") == 0)  sys_ctx->interpreter = new AudiRS3GYInterpreter();
         else if (strcmp(chassis, "5G") == 0 || strcmp(chassis, "BA") == 0 || strcmp(chassis, "AM") == 0 || strcmp(chassis, "AU") == 0) sys_ctx->interpreter = new VwGolf7Interpreter();
