@@ -76,12 +76,16 @@ The system is designed from the ground up for **platform-agnostic extensibility*
 - ✅ Interactive peak boost reset button
 - ✅ Brand-specific accent colors per interpreter
 - ✅ Grouped user-facing status summaries with safe `UNAVAILABLE` fallbacks
+- ✅ **Fuel level display** – litres and tank percentage shown where platform supports it
+- ✅ **Speed units toggle (km/h ↔ mph)** – touchscreen button on Performance tab; persisted to NVS
 
 ### Network & Remote Access
 - ✅ WiFi Access Point hotspot (AP mode)
 - ✅ Real-time WebSocket telemetry streaming (10 Hz broadcast)
 - ✅ Responsive web dashboard with live metrics
 - ✅ Auto-reconnect logic for reliable wireless connectivity
+- ✅ **Fuel level card** in the web dashboard (hidden when not supported)
+- ✅ **Speed units toggle button** in the web dashboard nav bar (`SET_UNITS_MPH` / `SET_UNITS_KMH` WebSocket commands)
 
 ### Safety Features
 - ✅ Dual thermal threshold monitoring (oil & coolant)
@@ -768,7 +772,7 @@ http://192.168.4.1
 - **Endpoint:** `ws://192.168.4.1/ws`
 - **Update Rate:** 10 Hz (100 ms intervals)
 - **Broadcast Mode:** All connected clients receive identical JSON payload
-- **Bidirectional Commands:** `RESET_PEAK`, `SET_AP_PASSWORD <new_password>`
+- **Bidirectional Commands:** `RESET_PEAK`, `SET_AP_PASSWORD <new_password>`, `SET_UNITS_MPH`, `SET_UNITS_KMH`
 
 ### Runtime Password Changes
 
@@ -776,6 +780,68 @@ http://192.168.4.1
 - **Web dashboard:** use the **Change AP Password** button in the Diagnostic tab
 - **Touchscreen UI:** use **Set WiFi Password** on the Diagnostic tab
 - New password is validated (8–63 printable ASCII chars), saved to NVS, and applied immediately by restarting the hotspot.
+
+---
+
+## Serial Console Commands
+
+Connect at **921600 baud** (USB CDC virtual port):
+
+| Command | Description |
+|---|---|
+| `<17-char VIN>` | Inject a VIN, load matching interpreter and morphed UI |
+| `fulltest` | Automated VIN sweep across all chassis signatures |
+| `stoptest` | Stop an in-progress fulltest sweep |
+| `comforttest` | Run comfort signal injection test |
+| `wifi on` | Start the Wi-Fi hotspot |
+| `wifi off` | Stop the Wi-Fi hotspot |
+| `setpass` | Interactive AP password change prompt |
+| `setpass <new_password>` | Set AP password inline |
+| `set units kmh` | Set speed display to km/h and persist to NVS |
+| `set units mph` | Set speed display to mph and persist to NVS |
+| `get units` | Print currently active speed units |
+| `get fuel` | Print current decoded fuel level (litres and %) |
+
+Speed units preference is persisted in NVS key `can-decoder/spd_unit` and survives reboots.
+
+---
+
+## Fuel Level Decoding
+
+### Overview
+
+Fuel level is decoded per-platform using passive CAN frame sniffing.  
+For supported platforms a UDS ReadDataByIdentifier request can optionally be enabled.
+
+### Profile Matrix
+
+| Platform | Passive Frame | Byte | Formula | Confidence | UDS DID / Notes |
+|---|---|---|---|---|---|
+| **MQB / MQB Evo** | `0x12F` | 4 | `× 0.5 L` | MEDIUM | DID `0x2203` via req `0x714` / resp `0x77E` |
+| **PQ35 / PQ46** | `0x2C0` | 2 | `× 1.0 L` | MEDIUM | Also sniffs `0x621` byte 2 as fallback |
+| **Small / MQB A0** | `0x12F` | 4 | `× 0.5 L` | MEDIUM | DID `0x2203` via req `0x714` / resp `0x77E` |
+| **MLB Longitudinal** | `0x12F` | 4 | `× 0.5 L` | LOW | Unconfirmed — validate per model |
+| **PQ24 / PL45** | _(none)_ | — | — | — | No documented passive CAN fuel ID |
+| **MEB Electric** | _(none)_ | — | — | — | No liquid fuel tank; use `ev_soc_pct` |
+
+> **Important:** CAN IDs, byte offsets, and scaling factors vary by model-year, cluster software revision, and regional market.  
+> All mappings are gated behind their specific platform profile.  
+> The UDS DID `0x2203` and request ID `0x714` are confirmed on some MQB variants but **not universally valid**.  
+> Treat MEDIUM confidence entries as experimental — validate on your own vehicle before relying on them.
+
+### Plausibility Filter
+
+The decoder rejects frames that would imply:
+- A fuel drop larger than 5 L per update (sensor noise / corrupt frame).
+- A negative or zero-byte result (hardware not ready).
+
+An increase larger than 8 L per update is treated as a refuel event and accepted.
+
+### UDS Polling (optional)
+
+UDS queries are not currently issued automatically. The UDS endpoint configurations are stored in `FuelProfiles.h` for future integration. A 1 Hz polling rate is recommended to avoid saturating the bus.
+
+---
 
 **Telemetry Payload (JSON):**
 ```json
@@ -785,6 +851,11 @@ http://192.168.4.1
   "peak": 1.45,
   "oil": 92,
   "h2o": 88,
+  "spd": 112.5,
+  "units": 0,
+  "fuel_l": 42.5,
+  "fuel_pct": 77.3,
+  "fuel_ok": true,
   "gear_label": "D4",
   "mode_name": "SPORT",
   "odo": 182345.6,
@@ -796,9 +867,12 @@ http://192.168.4.1
   "mil_ok": true,
   "dtc": 0,
   "volt": 13.8,
-  "car": "Audi A3 / S3 / RS3 (MQB Matrix)"
+  "car": "Audi A3 / S3 / RS3 (MQB Matrix)",
+  "cap_fuel": true
 }
 ```
+
+`units` field: `0` = km/h, `1` = mph.  `fuel_l` = litres, `fuel_pct` = tank percent, `fuel_ok` = whether a valid reading has been decoded.
 
 ---
 

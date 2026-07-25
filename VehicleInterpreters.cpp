@@ -202,6 +202,7 @@ PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen) {
             c.has_mmi             = false;
             c.has_acc_radar       = false;
             c.has_ambient_rgb     = false;
+            c.has_fuel_level      = false;  // No confirmed passive CAN fuel ID for PQ24
             c.has_ev_battery      = false;
             c.has_ev_charging     = false;
             c.has_ev_regen        = false;
@@ -226,6 +227,7 @@ PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen) {
             c.has_mmi             = true;
             c.has_acc_radar       = false;
             c.has_ambient_rgb     = false;
+            c.has_fuel_level      = true;   // Passive 0x2C0 / 0x621 [MEDIUM confidence]
             c.has_ev_battery      = false;
             c.has_ev_charging     = false;
             c.has_ev_regen        = false;
@@ -250,6 +252,7 @@ PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen) {
             c.has_mmi             = false;  // No MMI rotary on compact platforms
             c.has_acc_radar       = false;
             c.has_ambient_rgb     = false;
+            c.has_fuel_level      = true;   // MQB A0: passive 0x12F [MEDIUM confidence]
             c.has_ev_battery      = false;
             c.has_ev_charging     = false;
             c.has_ev_regen        = false;
@@ -274,6 +277,7 @@ PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen) {
             c.has_mmi             = true;
             c.has_acc_radar       = true;
             c.has_ambient_rgb     = true;
+            c.has_fuel_level      = true;   // Passive 0x12F + UDS DID 0x2203 [MEDIUM confidence]
             c.has_ev_battery      = false;
             c.has_ev_charging     = false;
             c.has_ev_regen        = false;
@@ -298,6 +302,7 @@ PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen) {
             c.has_mmi             = true;
             c.has_acc_radar       = true;
             c.has_ambient_rgb     = false;
+            c.has_fuel_level      = true;   // Passive 0x12F [LOW confidence — validate per model]
             c.has_ev_battery      = false;
             c.has_ev_charging     = false;
             c.has_ev_regen        = false;
@@ -322,6 +327,7 @@ PlatformCapabilities getPlatformCapabilities(MqbPlatformSeries gen) {
             c.has_mmi             = false;  // Physical MMI replaced by touch
             c.has_acc_radar       = true;
             c.has_ambient_rgb     = true;
+            c.has_fuel_level      = false;  // No liquid fuel tank on MEB
             c.has_ev_battery      = true;
             c.has_ev_charging     = true;
             c.has_ev_regen        = true;

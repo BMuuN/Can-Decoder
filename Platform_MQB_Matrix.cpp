@@ -1,4 +1,5 @@
 #include "VehicleInterpreters.h"
+#include "FuelProfiles.h"
 
 static constexpr BoolSignalMapping kMqbComfortSignalMappings[] = {
     {0x470, 0, 0x01, &LiveTelemetryMetrics::left_indicator_active,  &LiveTelemetryMetrics::left_indicator_known},
@@ -71,6 +72,16 @@ static void parseStandardMqbFrame(twai_message_t &msg) {
         case 0x317: { // MQB Exterior Ambient Temperature (raw - 40 = °C)
             if (msg.data_length_code < 1) break;
             sys_ctx->metrics.exterior_temp = decode_temperature_offset(msg.data[0]);
+            break;
+        }
+        case 0x12F: { // MQB Instrument Cluster gauge broadcast — fuel level
+            // Byte 4 carries fuel remaining in units of 0.5 L per LSB.
+            // Confidence: MEDIUM — confirmed on Golf Mk7 and Audi A3 8V;
+            // may vary on some cluster software revisions.  Guarded by
+            // plausibility filter so corrupt frames are silently rejected.
+            if (msg.data_length_code < 5) break;
+            const float raw_liters = (float)msg.data[4] * 0.5f;
+            applyFuelPlausibility(sys_ctx, raw_liters);
             break;
         }
     }
