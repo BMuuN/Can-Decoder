@@ -48,12 +48,13 @@ TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 720, 1280
 
 // --- HARDWARE CONFIGURATION MAPPINGS ---
 // 40-Pin Expansion Header Layout Assignments
-#define CH0_TX 4
-#define CH0_RX 5
-#define CH1_TX 6
-#define CH1_RX 7
-#define CH2_TX 8
-#define CH2_RX 9
+
+#define CH0_TX 4   // Connected to green label "GPIO4"
+#define CH0_RX 5   // Connected to green label "GPIO5"
+#define CH1_TX 6   // Connected to green label "GPIO06"
+#define CH1_RX 22  // Connected to green label "GPIO22"
+#define CH2_TX 26  // Connected to green label "GPIO26"
+#define CH2_RX 24  // Connected to green label "GPIO24"
 
 // Integrated Audio Amplifier Header mapping for the Waveshare P4
 #define AUDIO_PWM_PIN 45
