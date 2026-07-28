@@ -13,6 +13,7 @@ The project combines:
 - 📡 Multi-bus CAN decoding
 - 📊 Real-time performance instrumentation
 - 🔧 Diagnostic monitoring
+- ⛽ Fuel level monitoring and calibration
 - ⚡ EV telemetry support
 - 📱 Browser-based dashboards
 - 🖥️ LVGL touchscreen cockpit
@@ -24,7 +25,7 @@ All running directly on embedded hardware without requiring an external server.
 
 ## ✨ Features
 
-### Performance Telemetry
+### 🚀 Performance Telemetry
 
 - Engine RPM
 - Vehicle Speed
@@ -35,7 +36,17 @@ All running directly on embedded hardware without requiring an external server.
 - Gear Selection
 - Drive Mode Detection
 
-### Comfort Systems
+### ⛽ Fuel System Monitoring
+
+- Fuel Level (Litres)
+- Fuel Percentage
+- Platform-Aware Fuel Decoding
+- Fuel Plausibility Validation
+- Fuel Profile Calibration Tables
+- Unsupported Platform Detection
+- Real-Time Fuel Monitoring
+
+### 🏠 Comfort Systems
 
 - Door Status Monitoring
 - Handbrake Status
@@ -44,14 +55,14 @@ All running directly on embedded hardware without requiring an external server.
 - Cabin Lighting
 - Climate Temperature
 
-### Infotainment
+### 🎵 Infotainment
 
 - Source Detection
 - Track Information
 - MMI Command Decoding
 - Phone Activity Monitoring
 
-### Diagnostics
+### 🔧 Diagnostics
 
 - MIL Status
 - DTC Count Tracking
@@ -59,53 +70,20 @@ All running directly on embedded hardware without requiring an external server.
 - Vehicle Electrical Voltage
 - Live Diagnostic Traffic Monitoring
 
-### Electric Vehicle Support
+### ⚡ Electric Vehicle Support
 
-- Battery State Of Charge
+- Battery State Of Charge (SOC)
 - HV Battery Voltage
 - Charging Power
 - Charging Status
-- Cell Voltage Delta
+- Cell Voltage Delta Monitoring
 - Regenerative Braking Torque
 - Drive Motor Temperature
 - OTA Status Monitoring
 
 ---
 
-## 🏗 Architecture
-
-```text
-                  ┌─────────────────┐
-                  │ Vehicle Network │
-                  └────────┬────────┘
-                           │
-                           ▼
-
-          ┌──────────────────────────────────┐
-          │ Platform-Specific Decoders       │
-          │ MQB / MEB / MLB / PQ / PQ24      │
-          └────────────────┬─────────────────┘
-                           │
-                           ▼
-
-          ┌──────────────────────────────────┐
-          │ Live Telemetry Metrics Engine    │
-          └────────────────┬─────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-
- ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
- │ LVGL UI     │   │ WebSocket   │   │ Diagnostics │
- │ Dashboard   │   │ Dashboard   │   │ & Logging   │
- └─────────────┘   └─────────────┘   └─────────────┘
-```
-
----
-
 ## 🚙 Supported Platform Families
-
-### Volkswagen Group Platforms
 
 | Platform | Status |
 |----------|---------|
@@ -113,154 +91,7 @@ All running directly on embedded hardware without requiring an external server.
 | MQB EVO | ✅ Supported |
 | MEB Electric | ✅ Supported |
 | MLB Longitudinal | ✅ Supported |
-| PQ Legacy | ✅ Supported |
-| PQ24 Early | ✅ Supported |
-| Small Compact | ✅ Supported |
-
-### Brands
-
-- Audi
-- Volkswagen
-- Škoda
-- SEAT
-- CUPRA
-
----
-
-## 🖥 LVGL Cockpit
-
-Native touchscreen dashboard built using LVGL and GT911 touch support.
-
-### Dashboard Tabs
-
-#### Performance
-
-- RPM Gauge
-- Boost Gauge
-- Speed Display
-- Oil Temperature
-- Coolant Temperature
-- Fuel Monitoring
-
-#### Comfort
-
-- Door Monitoring
-- Lighting Status
-- Climate Information
-- Indicator State
-
-#### Infotainment
-
-- MMI Decoding
-- Media Source Detection
-- Track Monitoring
-- Phone Activity
-
-#### Diagnostics
-
-- Vehicle Identification
-- ECU Status
-- Diagnostic Traffic
-- Powertrain Validation
-
----
-
-## 📱 Web Dashboard
-
-Built-in Wi-Fi hotspot and WebSocket infrastructure provide a live browser dashboard.
-
-### Features
-
-- Live telemetry streaming
-- Mobile-friendly interface
-- Automatic reconnect
-- EV capability detection
-- Dynamic feature enablement
-- Real-time diagnostics
-
-No cloud service required.
-
----
-
-## 🧪 Vehicle Simulator
-
-The project includes a full bench-testing framework capable of generating realistic CAN traffic.
-
-### Supported Simulation Modes
-
-- MQB
-- MQB EVO
-- MEB Electric
-- PQ24
-- Legacy PQ
-
-### Simulated Systems
-
-- Engine Data
-- Vehicle Speed
-- Thermal Systems
-- Fuel Systems
-- Comfort Signals
-- Diagnostic Traffic
-- EV Charging
-- Battery Behaviour
-
-Develop dashboards and decoders without requiring a vehicle connection.
-
----
-
-## ⚙ Hardware
-
-### Target Platform
-
-- ESP32-P4
-
-### Display
-
-- MIPI-DSI Touch Displays
-- GT911 Capacitive Touch Controller
-
-### Connectivity
-
-- Multi-channel TWAI CAN
-- USB Serial
-- Wi-Fi Access Point
-- WebSocket Telemetry
-
----
-
-## 🔨 Current Goals
-
-- Expand vehicle coverage
-- Improve VIN identification
-- Extend EV telemetry support
-- Improve diagnostic accuracy
-- Enhance simulation realism
-- Add additional platform generations
-
----
-
-## 📸 Screenshots
-
-> Add screenshots here once available.
-
-### LVGL Cockpit
-
-!LVGL Dashboard
-
-### Web Dashboard
-
-docs/images/web-dashboard.png
-
----
-
-## ⚠ Disclaimer
-
-Vehicle networks differ between model years, regional configurations and control-module revisions.
-
-Signal definitions contained within this project may not be valid for every vehicle variant.
-
-Use at your own risk.
+|
 
 # Universal CAN Bus Decoder & Telemetry Platform
 
