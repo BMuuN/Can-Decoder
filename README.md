@@ -421,9 +421,10 @@ Use `getPlatformEnglishSummary(series)` for a human-readable interpretation summ
 
 ## Hardware Requirements
 
-### Microcontroller
-- **ESP32** (dual-core 240 MHz, 520 KB SRAM)
-- Recommended: Waveshare ESP32-S3-LCD-4.3" or compatible with integrated display
+### Microcontroller & Display
+-Recommended **ESP32-P4** (this has 3 TWAI Channels and can read the drivetrain, infotainment and comfort can channels simultaneously) 
+-Alternative **ESP32** (dual-core 240 MHz, 520 KB SRAM) Note: these have only one TWAI Chanell so can only monitor/interact with one CAN Channel from a car system at a time. 
+- Recommended: Waveshare 5inch DSI Capacitive Touch Display,720×1280, IPS, Optical Bonding Toughened Glass Panel, DSI Interface, 5-Point Touch
 
 ### CAN Interface
 - **CAN Gateway Module** (MCP2515 or integrated TWAI on ESP32)
@@ -436,6 +437,7 @@ Use `getPlatformEnglishSummary(series)` for a human-readable interpretation summ
 - Display driver integration with LVGL 8.x
 
 ### Connectors
+-Recommended **Can Gateway extension** Canbus Gateway Extension Adapter Cable Harness for Volkswagen MQB Golf 7 MK7 Tiguan MK2 Touran
 - **OBD2 adapter** for vehicle CAN bus connection
 - **USB-C** for serial debugging and power
 - **WiFi antenna** (built-in or external for range)
@@ -481,12 +483,16 @@ CAN Transceiver (e.g., SN65HVD230)
 **Display & Touch (LVGL):**
 ```
 GT911 Capacitive Touch (I2C)
-├─ SDA   → ESP32 GPIO 19 (I2C_SDA)
-├─ SCL   → ESP32 GPIO 20 (I2C_SCL)
-├─ INT   → GPIO 21 (optional interrupt)
-├─ RST   → GPIO 22 (optional reset)
+├─ SDA   → ESP32 GPIO 7 (I2C_SDA)
+├─ SCL   → ESP32 GPIO 8 (I2C_SCL)
+├─ INT   → GPIO 11 (optional interrupt)
+├─ RST   → GPIO 12 (optional reset)
 └─ VCC/GND → Power
 
+IF MIPI
+just plug into mipi interface 1 on the ESP32-P4
+
+else...
 LCD Display (1280×720)
 ├─ Data Pins (8-bit or SPI parallel)
 ├─ Control Pins (RS, RW, EN or CS, DC, SCLK, MOSI)
@@ -499,12 +505,12 @@ Edit the top of `Audi_S3_8V.ino`:
 
 ```cpp
 // --- HARDWARE GPIO MAPPINGS ---
-#define CH0_TX 4       // CAN Channel 0 TX
-#define CH0_RX 5       // CAN Channel 0 RX
-#define CH1_TX 6       // CAN Channel 1 TX (optional)
-#define CH1_RX 7       // CAN Channel 1 RX (optional)
-#define CH2_TX 8       // CAN Channel 2 TX (optional)
-#define CH2_RX 9       // CAN Channel 2 RX (optional)
+#define CH0_TX 4   // Connected to green label "GPIO4"
+#define CH0_RX 5   // Connected to green label "GPIO5"
+#define CH1_TX 6   // Connected to green label "GPIO06"
+#define CH1_RX 22  // Connected to green label "GPIO22"
+#define CH2_TX 26  // Connected to green label "GPIO26"
+#define CH2_RX 24  // Connected to green label "GPIO24"
 
 #define AUDIO_PWM_PIN 45   // Thermal alarm audio output
 
