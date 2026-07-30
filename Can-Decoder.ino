@@ -1,5 +1,5 @@
 #include <WiFi.h>
-#include <WebServer.h>
+// #include <WebServer.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 #include <ArduinoJson.h>
@@ -12,17 +12,49 @@
 #include <esp_heap_caps.h>  // PSRAM-aware heap allocation (heap_caps_malloc)
 
 #include <Wire.h>
+#include <lvgl.h>
 #include <TAMC_GT911.h>
 
+// S3/S4 switch for different boards
+#define IS_S3      1
+
+#if IS_S3
+#include "esp_lcd_panel_rgb.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_timer.h"
+
+// LCD RGB Pins
+#define LCD_HSYNC       39
+#define LCD_VSYNC       41
+#define LCD_DE          40
+#define LCD_PCLK        42
+#define LCD_BACK_LIGHT  2
+
+// LCD Resolution
+#define LCD_H_RES 800
+#define LCD_V_RES 480
+
+#else
+
+// LCD Resolution
+#define LCD_H_RES 1280
+#define LCD_V_RES 720
+
+#endif
+
 // Dedicated MIPI DSI internal I2C lanes on the ESP32-P4-Module-DEV-KIT
-#define TOUCH_SDA  7   
-#define TOUCH_SCL  8   
-#define TOUCH_INT  11
-#define TOUCH_RST  12
+#define TOUCH_SDA  19   
+#define TOUCH_SCL  20   
+#define TOUCH_INT  18
+#define TOUCH_RST  38
+
+// LVGL tick timer
+esp_timer_handle_t lvgl_tick_timer = NULL;
 
 static bool g_touch_online = false;
 // Instantiate the panel using the exact 720x1280 native resolution markers
-TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 720, 1280);
+TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, LCD_V_RES, LCD_H_RES);
 
 // --- WI-FI HOTSPOT CAPABILITY SELECTION ---
 // On boards where SOC_WIFI_SUPPORTED is 0 but an on-board Wi-Fi module is
@@ -49,15 +81,15 @@ TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 720, 1280
 // --- HARDWARE CONFIGURATION MAPPINGS ---
 // 40-Pin Expansion Header Layout Assignments
 
-#define CH0_TX 4   // Connected to green label "GPIO4"
-#define CH0_RX 5   // Connected to green label "GPIO5"
-#define CH1_TX 6   // Connected to green label "GPIO06"
-#define CH1_RX 22  // Connected to green label "GPIO22"
-#define CH2_TX 26  // Connected to green label "GPIO26"
-#define CH2_RX 24  // Connected to green label "GPIO24"
+#define CH0_TX 43   // Connected to green label "GPIO4"
+#define CH0_RX 44   // Connected to green label "GPIO5"
+// #define CH1_TX 6   // Connected to green label "GPIO06"
+// #define CH1_RX 22  // Connected to green label "GPIO22"
+// #define CH2_TX 26  // Connected to green label "GPIO26"
+// #define CH2_RX 24  // Connected to green label "GPIO24"
 
 // Integrated Audio Amplifier Header mapping for the Waveshare P4
-#define AUDIO_PWM_PIN 45
+#define AUDIO_PWM_PIN 17
 
 // --- SAFETY CRITICAL THRESHOLDS ---
 #define MAX_SAFE_OIL_TEMP 115     // Alarm activates over 115°C
@@ -531,8 +563,8 @@ void startWifiHotspot() {
     }
     if (WiFi.softAP(AP_SSID, g_ap_password)) {
         if (!g_wifi_routes_registered) {
-            ws.onEvent(onWsEvent);
-            server.addHandler(&ws);
+            // ws.onEvent(onWsEvent);
+            // server.addHandler(&ws);
             server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
                 request->send_P(200, "text/html", index_html);
             });
@@ -1330,13 +1362,19 @@ void saveSpeedUnitsToNvs();
 void loadSpeedUnitsFromNvs();
 static void formatGearLabel(const LiveTelemetryMetrics& m, char* out, size_t out_size);
 
+// =========================================================================
+//  DISPLAY
+// =========================================================================
+
 // --- DISPLAY BUFFER BLOCK ALLOCATION FOR LVGL ---
 // #define DISP_HOR_RES 800  // Set this to your specific Waveshare screen width
 // #define DISP_VER_RES 480  // Set this to your specific Waveshare screen height
 
 // --- DISPLAY RESOLUTION ADJUSTED FOR LANDSCAPE ROTATION ---
-#define DISP_HOR_RES 1280 // Becomes your horizontal width when turned sideways
-#define DISP_VER_RES 720  // Becomes your vertical height when turned sideways
+// #define DISP_HOR_RES 1280 // Becomes your horizontal width when turned sideways
+// #define DISP_VER_RES 720  // Becomes your vertical height when turned sideways
+#define DISP_HOR_RES 800
+#define DISP_VER_RES 480
 
 static lv_disp_draw_buf_t draw_buf;
 // Full-frame draw buffers – allocated from OPI PSRAM in setup().
@@ -1349,8 +1387,32 @@ static lv_disp_drv_t disp_drv;
 
 // Mandatory LVGL display driver callback function
 void dummy_display_flush(lv_disp_drv_t * disp_drv, const lv_area_t * area, lv_color_t * color_p) {
+#if IS_S3
+    int x1 = area->x1;
+    int y1 = area->y1;
+    int x2 = area->x2;
+    int y2 = area->y2;
+
+    // Clamp to valid screen bounds
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 >= DISP_HOR_RES) x2 = DISP_HOR_RES - 1;
+    if (y2 >= DISP_VER_RES) y2 = DISP_VER_RES - 1;
+
+    esp_lcd_panel_draw_bitmap(
+        (esp_lcd_panel_handle_t)disp_drv->user_data,
+        x1, y1,
+        x2 + 1, y2 + 1,
+        color_p
+    );
+#endif
     lv_disp_flush_ready(disp_drv);
 }
+
+// LVGL tick timer callback - advanced LVGL's internal clock and must be called every 1ms from loop().
+void IRAM_ATTR lv_tick_task(void *arg) {
+    lv_tick_inc(1);
+};
 
 // --- GT911 CAPACITIVE TOUCH LAYER VARIABLES ---
 static lv_indev_drv_t indev_drv;
@@ -1362,16 +1424,23 @@ void landscape_touch_read_cb(lv_indev_drv_t * indev_driver, lv_indev_data_t * da
         return;
     }
 
-    tp.read(); 
+    tp.read();
     if (tp.isTouched) {
+        
         // FIXED: Extract only the primary touch point data from the point tracking array
         TP_Point p = tp.points[0]; 
         int raw_portrait_x = p.x; 
         int raw_portrait_y = p.y; 
 
+        Serial.printf("[RAW TOUCH] X:%u  Y:%u\n", raw_portrait_x, raw_portrait_y);
+
+        // data->point.x = 0;
+        // data->point.y = 0;
+        // data->state = LV_INDEV_STATE_PR;
+
         // Your 90-degree transformation matrix converts everything perfectly
         data->point.x = raw_portrait_y;
-        data->point.y = 720 - 1 - raw_portrait_x;
+        data->point.y = LCD_H_RES - 1 - raw_portrait_x;
         data->state = LV_INDEV_STATE_PR;   // Tell LVGL a click is "Pressed"
     } else {
         data->state = LV_INDEV_STATE_REL;  // Tell LVGL a click is "Released"
@@ -1382,15 +1451,21 @@ void landscape_touch_read_cb(lv_indev_drv_t * indev_driver, lv_indev_data_t * da
 TaskHandle_t CockpitTaskHandle = NULL;
 
 // CAN TX/RX pin table for bus-off recovery (mirrors the setup() calls)
-static const int kCanTxPins[] = {CH0_TX, CH1_TX, CH2_TX};
-static const int kCanRxPins[] = {CH0_RX, CH1_RX, CH2_RX};
+// static const int kCanTxPins[] = {CH0_TX, CH1_TX, CH2_TX};
+// static const int kCanRxPins[] = {CH0_RX, CH1_RX, CH2_RX};
+static const int kCanTxPins[] = {CH0_TX};
+static const int kCanRxPins[] = {CH0_RX};
 
 // Forward declaration of the custom thread runner
 void CockpitCoreProcessor(void *pvParameters) {
   Serial.println("[SYSTEM] High-Memory Telemetry Task Thread bound to Core 1 successfully.");
 
   for(;;) {
+    // Process LVGL's tasks.
+    // This must be called regularly (every 5–10ms). To redraw the screen, process input events, run animations, update charts
+    // it depends on lv_tick_inc().
     lv_timer_handler();
+
     refreshUiProfileIfPending();
 
     processInboundFrames(0, "DRIVE TRAIN");
@@ -1654,40 +1729,42 @@ void setup() {
   pinMode(AUDIO_PWM_PIN, OUTPUT);
   digitalWrite(AUDIO_PWM_PIN, LOW);
 
-  // 1. RUN HARDWARE TRANSCIEVER ELECTRICAL DIAGNOSTICS ON BOOT
-  bool system_safe = true;
-  system_safe &= runBootDiagnostic(0, CH0_TX, CH0_RX, "Drive Train Transceiver");
-   delay(100);
-  system_safe &= runBootDiagnostic(1, CH1_TX, CH1_RX, "Comfort Transceiver");
-   delay(100);
-  system_safe &= runBootDiagnostic(2, CH2_TX, CH2_RX, "Infotainment Transceiver");
- delay(100);
+//   // 1. RUN HARDWARE TRANSCIEVER ELECTRICAL DIAGNOSTICS ON BOOT
+//   bool system_safe = true;
+//   system_safe &= runBootDiagnostic(0, CH0_TX, CH0_RX, "Drive Train Transceiver");
+//    delay(100);
+//   system_safe &= runBootDiagnostic(1, CH1_TX, CH1_RX, "Comfort Transceiver");
+//    delay(100);
+//   system_safe &= runBootDiagnostic(2, CH2_TX, CH2_RX, "Infotainment Transceiver");
+//  delay(100);
 
-  if (!system_safe) {
-    Serial.println("\n[CRITICAL ERROR] Transceiver hardware diagnostic check failed!");
-    while(1) delay(1000);
-  }
+ Serial.println("SKIPPING CAN INIT");
 
-  // 2. PRODUCTION TWAI INTERFACE STARTUP
-  startTwaiChannel(0, CH0_TX, CH0_RX);  delay(100);
-  g_twai0_valid.store(true, std::memory_order_release);  // Port 0 handle is now valid
-  startTwaiChannel(1, CH1_TX, CH1_RX);  delay(100);
-  startTwaiChannel(2, CH2_TX, CH2_RX);  delay(100);
+//   if (!system_safe) {
+//     Serial.println("\n[CRITICAL ERROR] Transceiver hardware diagnostic check failed!");
+//     while(1) delay(1000);
+//   }
 
-  // --- NEW ACTIVE VEHICLE IDENTIFICATION STAGE ---
-    Serial.println("[SYSTEM] Interrogating Powertrain Bus for Vehicle Identification...");
-  char global_vin[18] = { 0 };
-  if (requestVehicleVIN(global_vin, sizeof(global_vin))) {
-      Serial.print("[SYSTEM] SUCCESS! Detected Car VIN: ");
-      Serial.println(global_vin);
+//   // 2. PRODUCTION TWAI INTERFACE STARTUP
+//   startTwaiChannel(0, CH0_TX, CH0_RX);  delay(100);
+//   g_twai0_valid.store(true, std::memory_order_release);  // Port 0 handle is now valid
+//   startTwaiChannel(1, CH1_TX, CH1_RX);  delay(100);
+//   startTwaiChannel(2, CH2_TX, CH2_RX);  delay(100);
 
-      // Call the dynamic parsing matrix safely
-      decodeAndPrintVehicleIdentity(global_vin);
-      // Initial live powertrain check: engine code, gearbox code, LHD/RHD
-      performPowertrainCheck(false);
-  } else {
-      Serial.println("[SYSTEM] WARNING: VIN query timed out. Defaulting to generic layout profiles.");
-  }
+//   // --- NEW ACTIVE VEHICLE IDENTIFICATION STAGE ---
+//     Serial.println("[SYSTEM] Interrogating Powertrain Bus for Vehicle Identification...");
+//   char global_vin[18] = { 0 };
+//   if (requestVehicleVIN(global_vin, sizeof(global_vin))) {
+//       Serial.print("[SYSTEM] SUCCESS! Detected Car VIN: ");
+//       Serial.println(global_vin);
+
+//       // Call the dynamic parsing matrix safely
+//       decodeAndPrintVehicleIdentity(global_vin);
+//       // Initial live powertrain check: engine code, gearbox code, LHD/RHD
+//       performPowertrainCheck(false);
+//   } else {
+//       Serial.println("[SYSTEM] WARNING: VIN query timed out. Defaulting to generic layout profiles.");
+//   }
 
 
   // 2b. ACTIVATE ASYNCHRONOUS COCKPIT HOTSPOT AP NETWORK
@@ -1697,6 +1774,7 @@ void setup() {
 #else
   Serial.println("[SYSTEM] Wi-Fi hotspot disabled: WIFI_HOTSPOT_ENABLED=0 set at compile time.");
 #endif
+  Serial.println("Loading speed Units from NVS");
   loadSpeedUnitsFromNvs();
 
  // --- CAPACITIVE TOUCH HARDWARE PING TEST ---
@@ -1729,13 +1807,85 @@ void setup() {
                 (unsigned)(DISP_HOR_RES * DISP_VER_RES * sizeof(lv_color_t) / 1024),
                 (unsigned)(2 * DISP_HOR_RES * DISP_VER_RES * sizeof(lv_color_t) / 1024));
 
+  // Initialize the display
   lv_init();
 
+#if IS_S3 == 0
+  Serial.println("Initializing S4 display");
   // Initialize the drawing buffer with full-frame double buffering
   lv_disp_draw_buf_init(&draw_buf, buf1, buf2, DISP_HOR_RES * DISP_VER_RES);
+  lv_disp_drv_init(&disp_drv);
+#else
+  Serial.println("Initializing S3 display");
+  lv_disp_draw_buf_init(&draw_buf, buf1, NULL, DISP_HOR_RES * DISP_VER_RES);
+  lv_disp_drv_init(&disp_drv);
+
+  // --- RGB Panel Configuration ---
+  esp_lcd_rgb_panel_config_t panel_config = {
+    .clk_src = LCD_CLK_SRC_DEFAULT,
+    .timings = {
+        .pclk_hz = 16000000,
+        .h_res = DISP_HOR_RES,
+        .v_res = DISP_VER_RES,
+        .hsync_pulse_width = 10,
+        .hsync_back_porch = 10,
+        .hsync_front_porch = 10,
+        .vsync_pulse_width = 10,
+        .vsync_back_porch = 10,
+        .vsync_front_porch = 10,
+        .flags = {
+            .hsync_idle_low = true,
+            .vsync_idle_low = true,
+            .de_idle_high = true,
+            .pclk_active_neg = true,
+        }
+    },
+    .data_width = 16,
+    .bits_per_pixel = 16,
+    .hsync_gpio_num = LCD_HSYNC,
+    .vsync_gpio_num = LCD_VSYNC,
+    .de_gpio_num    = LCD_DE,
+    .pclk_gpio_num  = LCD_PCLK,
+    .disp_gpio_num = -1,
+    .data_gpio_nums = {
+        45, // R0
+        48, // R1
+        47, // R2
+        21, // R3
+        14, // R4
+
+        5,  // G0
+        6,  // G1
+        7,  // G2
+        15, // G3
+        16, // G4
+        4,  // G5
+
+        8,  // B0
+        3,  // B1
+        46, // B2
+        9,  // B3
+        1   // B4
+    },
+    .flags = {
+        .fb_in_psram = true
+    }
+  };
+
+  esp_lcd_panel_handle_t panel_handle;
+  esp_lcd_new_rgb_panel(&panel_config, &panel_handle);
+  esp_lcd_panel_reset(panel_handle);
+  delay(10);
+  esp_lcd_panel_init(panel_handle);
+
+  disp_drv.user_data = panel_handle;
+
+  // turn on backlight
+  pinMode(LCD_BACK_LIGHT, OUTPUT);
+  digitalWrite(LCD_BACK_LIGHT, HIGH);
+#endif
 
   // Initialize the display driver structural tracker
-  lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res = DISP_HOR_RES;
   disp_drv.ver_res = DISP_VER_RES;
   disp_drv.draw_buf = &draw_buf;
@@ -1743,11 +1893,21 @@ void setup() {
 
   // FORCE LANDSCAPE ORIENTATION: Rotates the visual matrix 90 degrees clockwise
   disp_drv.rotated = LV_DISP_ROT_90;
+  //disp_drv.rotated = LV_DISP_ROT_NONE;
+
+
+  Serial.print("LVGL hor_res = ");
+  Serial.println(disp_drv.hor_res);
+  Serial.print("LVGL ver_res = ");
+  Serial.println(disp_drv.ver_res);
+  Serial.print("LVGL rotated = ");
+  Serial.println(disp_drv.rotated);
+
 
   // Register the driver inside the master LVGL engine
   lv_disp_drv_register(&disp_drv);
 
-// 4. GT911 CAPACITIVE TOUCH INTERFACE INITIALIZATION
+  // 4. GT911 CAPACITIVE TOUCH INTERFACE INITIALIZATION
   lv_indev_drv_init(&indev_drv);
 
   // Define this input device type as a Touchpad panel
@@ -1759,10 +1919,19 @@ void setup() {
   // FIX: Changed from lv_indev_register to lv_indev_drv_register
   lv_indev_drv_register(&indev_drv);
 
+  const esp_timer_create_args_t lvgl_tick_timer_args = {
+    .callback = &lv_tick_task,
+    .name = "lv_tick"
+  };
+
+  esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer);
+  esp_timer_start_periodic(lvgl_tick_timer, 1000); // 1ms
+
   // Now it is completely safe to construct horizontal visual elements
   buildCockpitUI();
-    // 5. SPAWN INDEPENDENT HIGH-MEMORY THREAD
-   xTaskCreatePinnedToCore(
+  
+  // 5. SPAWN INDEPENDENT HIGH-MEMORY THREAD
+  xTaskCreatePinnedToCore(
     CockpitCoreProcessor,     // Target function to execute
     "CockpitTask",            // Descriptive tag
     32768,                    // Allocates massive 32KB stack layout
@@ -1776,6 +1945,11 @@ void setup() {
 }
 
 void loop() {
+
+  // Refresh LVGL display
+  lv_timer_handler();
+  delay(5);
+  
   static uint32_t last_cleanup = 0;
   if (g_web_dashboard_ready && millis() - last_cleanup > 1000) {
     last_cleanup = millis();
@@ -1903,17 +2077,22 @@ void loop() {
 void buildCockpitUI() {
   // Tab bar visible at 50px so users can tap to switch tabs
   sys_ctx->tv = lv_tabview_create(lv_scr_act(), LV_DIR_TOP, 50);
+  lv_obj_set_size(sys_ctx->tv, LV_PCT(100), LV_PCT(100));
   lv_obj_t *t1 = lv_tabview_add_tab(sys_ctx->tv, "PERFORMANCE");
   lv_obj_t *t2 = lv_tabview_add_tab(sys_ctx->tv, "COMFORT");
   lv_obj_t *t3 = lv_tabview_add_tab(sys_ctx->tv, "INFOTAINMENT");
   lv_obj_t *t4 = lv_tabview_add_tab(sys_ctx->tv, "DIAGNOSTIC");
 
   // Style overall dashboard black background matrix
-  lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
-  lv_obj_set_style_bg_color(t1, lv_color_black(), 0);
-  lv_obj_set_style_bg_color(t2, lv_color_black(), 0);
-  lv_obj_set_style_bg_color(t3, lv_color_black(), 0);
-  lv_obj_set_style_bg_color(t4, lv_color_black(), 0);
+  lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(t1, lv_color_black(), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(t2, lv_color_black(), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(t3, lv_color_black(), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(t4, lv_color_black(), LV_PART_MAIN);
+
+//   lv_obj_t *lbl = lv_label_create(lv_scr_act());
+//   lv_label_set_text(lbl, "HELLO BLEDDYN");
+//   lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 0);
 
   // =========================================================================
   // TAB 1: RADIAL INSTRUMENTS & DIALS + SPEED / THROTTLE
